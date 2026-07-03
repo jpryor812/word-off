@@ -4,6 +4,9 @@ import StoreKit
 struct PaywallView: View {
     @EnvironmentObject var app: AppState
     @Environment(\.dismiss) private var dismiss
+    @State private var promoCode = ""
+    @State private var promoMessage: String?
+    @State private var promoSucceeded = false
 
     var body: some View {
         NavigationStack {
@@ -28,6 +31,8 @@ struct PaywallView: View {
                         .panel()
 
                         productButtons
+
+                        promoSection
 
                         Button("Restore Purchases") {
                             Task { await app.entitlements.restorePurchases() }
@@ -80,6 +85,49 @@ struct PaywallView: View {
                 .buttonStyle(PrimaryButtonStyle(
                     color: product.id == EntitlementsManager.premiumID ? Theme.accent : Theme.backgroundLight))
             }
+        }
+    }
+
+    private var promoSection: some View {
+        VStack(spacing: 10) {
+            Text("Have a promo code?")
+                .font(.system(.subheadline, design: .rounded).weight(.bold))
+                .foregroundColor(Theme.tileText)
+
+            if app.entitlements.hasPromoPremium {
+                Label("Promo premium active", systemImage: "checkmark.seal.fill")
+                    .font(.system(.subheadline, design: .rounded).weight(.bold))
+                    .foregroundColor(Theme.win)
+            } else {
+                HStack {
+                    TextField("Promo code", text: $promoCode)
+                        .textFieldStyle(.roundedBorder)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Button("Apply") { redeemPromo() }
+                        .buttonStyle(.borderedProminent)
+                        .tint(Theme.accent)
+                        .disabled(promoCode.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+
+            if let promoMessage {
+                Text(promoMessage)
+                    .font(.system(.caption, design: .rounded).weight(.bold))
+                    .foregroundColor(promoSucceeded ? Theme.win : Theme.lose)
+            }
+        }
+        .panel()
+    }
+
+    private func redeemPromo() {
+        if app.entitlements.redeemPromo(code: promoCode) {
+            promoSucceeded = true
+            promoMessage = "Premium unlocked — enjoy!"
+            promoCode = ""
+        } else {
+            promoSucceeded = false
+            promoMessage = "That code isn't valid."
         }
     }
 

@@ -40,7 +40,7 @@ struct DailyHubView: View {
         .onAppear {
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("-demo-daily") {
-                activeDailySize = 7
+                activeDailySize = 10
             }
             #endif
         }
@@ -72,7 +72,7 @@ struct DailyHubView: View {
                     Text("\(size)-Letter Daily")
                         .font(.system(.subheadline, design: .rounded).weight(.bold))
                         .foregroundColor(Theme.tileText)
-                    Text(played != nil ? "Done — \(played!.totalScore) pts" : "4 racks · 20s each")
+                    Text(played != nil ? "Done — \(played!.totalScore) pts" : "4 racks · \(GameConstants.roundSeconds)s each")
                         .font(.system(.caption, design: .rounded))
                         .foregroundColor(Theme.tileText.opacity(0.6))
                 }
@@ -166,7 +166,7 @@ struct DailyPlayView: View {
                 rackInterstitial
             } else {
                 RackView(rack: engine.rack, flipped: engine.phase != .flipping,
-                         tileSize: engine.rackSize > 7 ? 36 : 44)
+                         tileSize: engine.rackSize > 8 ? 32 : engine.rackSize > 7 ? 36 : 44)
                     .animation(.spring(duration: 0.5), value: engine.phase)
             }
 
@@ -203,7 +203,12 @@ struct DailyPlayView: View {
 
     private var inputBar: some View {
         VStack(spacing: 8) {
-            if let locked = engine.lockedWord {
+            if let feedback = engine.submissionFeedback {
+                Text(feedback)
+                    .font(.system(.subheadline, design: .rounded).weight(.bold))
+                    .foregroundColor(Theme.lose)
+                    .transition(.opacity)
+            } else if let locked = engine.lockedWord {
                 Text("Locked in: \(locked)")
                     .font(.system(.subheadline, design: .rounded).weight(.bold))
                     .foregroundColor(Theme.win)
@@ -216,6 +221,9 @@ struct DailyPlayView: View {
                     .focused($inputFocused)
                     .disabled(engine.phase != .playing)
                     .onSubmit { engine.submitWord() }
+                    .onChange(of: engine.typedWord) { _, _ in
+                        engine.submissionFeedback = nil
+                    }
                 Button("Submit") { engine.submitWord() }
                     .buttonStyle(.borderedProminent)
                     .tint(Theme.accent)

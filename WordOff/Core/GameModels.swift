@@ -2,13 +2,13 @@ import Foundation
 
 enum GameConstants {
     static let pvpRackSize = 9
-    static let roundSeconds = 20
+    static let roundSeconds = 30
     static let pvpRoundsToWin = 4
     static let pvpMaxRounds = 7
     static let matchmakingTimeoutSeconds = 15
     static let reconnectGraceSeconds = 20
     static let maxConsecutiveTiedReplays = 3
-    static let dailyRackCounts = [5, 6, 7, 8, 9]
+    static let dailyRackCounts = [6, 7, 8, 9, 10]
     static let dailyRoundsPerPuzzle = 4
     static let freeDailyPuzzlesPerDay = 3
     static let baseLivesPerDay = 5
@@ -77,6 +77,6 @@ enum DailySeed {
 
     static func rack(day: String, rackSize: Int, round: Int) -> [Character] {
         var rng = SeededRandom(string: "wordoff-daily-\(day)-size\(rackSize)-round\(round)")
-        return LetterBag.drawRack(size: rackSize, rng: &rng)
+        return WordDictionary.shared.makeRack(size: rackSize, rng: &rng)
     }
 }

@@ -24,6 +24,7 @@ final class DailyEngine: ObservableObject {
     @Published var words: [String?] = []
     @Published var lastBreakdown: ScoreBreakdown?
     @Published var satOut = false
+    @Published var submissionFeedback: String?
 
     let day: String
     let rackSize: Int
@@ -48,6 +49,7 @@ final class DailyEngine: ObservableObject {
         lockedWord = nil
         satOut = false
         lastBreakdown = nil
+        submissionFeedback = nil
         secondsLeft = GameConstants.roundSeconds
         rack = DailySeed.rack(day: day, rackSize: rackSize, round: rackIndex)
         phase = .flipping
@@ -88,6 +90,17 @@ final class DailyEngine: ObservableObject {
         guard phase == .playing else { return }
         let word = typedWord.trimmingCharacters(in: .whitespaces).uppercased()
         guard !word.isEmpty else { return }
+        guard Scoring.isBuildable(word: word, from: rack) else {
+            submissionFeedback = "You can only use the letters on the rack!"
+            SoundPlayer.shared.play(.error)
+            return
+        }
+        guard WordDictionary.shared.contains(word) else {
+            submissionFeedback = "\(word) isn't a word — keep trying!"
+            SoundPlayer.shared.play(.error)
+            return
+        }
+        submissionFeedback = nil
         lockedWord = word
         haptics.impact()
     }

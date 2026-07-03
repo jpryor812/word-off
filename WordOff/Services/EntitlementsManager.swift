@@ -12,6 +12,11 @@ final class EntitlementsManager: ObservableObject {
     @Published private(set) var products: [Product] = []
     @Published private(set) var hasActiveSubscription = false
     @Published var purchaseError: String?
+    @Published private(set) var hasPromoPremium =
+        UserDefaults.standard.bool(forKey: "wordoff.promo.premium")
+
+    /// Promo codes and what they grant. `justintest` = free premium (testing).
+    private static let promoCodes: Set<String> = ["JUSTINTEST"]
 
     private var dailyPassDay: String {
         get { UserDefaults.standard.string(forKey: "wordoff.dailyPass.day") ?? "" }
@@ -37,8 +42,23 @@ final class EntitlementsManager: ObservableObject {
         dailyPassDay == Self.localDayString()
     }
 
-    /// Premium for gameplay purposes: subscription OR today's pass.
-    var isPremium: Bool { hasActiveSubscription || hasDailyPassToday }
+    /// Premium for gameplay purposes: subscription, today's pass, or promo.
+    var isPremium: Bool { hasActiveSubscription || hasDailyPassToday || hasPromoPremium }
+
+    /// Redeems a promo code. Returns true if the code was valid.
+    func redeemPromo(code: String) -> Bool {
+        let normalized = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard Self.promoCodes.contains(normalized) else { return false }
+        hasPromoPremium = true
+        UserDefaults.standard.set(true, forKey: "wordoff.promo.premium")
+        return true
+    }
+
+    /// Removes promo premium (handy for testing the free tier again).
+    func clearPromo() {
+        hasPromoPremium = false
+        UserDefaults.standard.set(false, forKey: "wordoff.promo.premium")
+    }
 
     private static func localDayString() -> String {
         let formatter = DateFormatter()

@@ -166,7 +166,12 @@ struct MatchView: View {
                     .font(.system(.caption, design: .rounded).weight(.bold))
                     .foregroundColor(Theme.accent)
             }
-            if let locked = engine.lockedWord {
+            if let feedback = engine.submissionFeedback {
+                Text(feedback)
+                    .font(.system(.subheadline, design: .rounded).weight(.bold))
+                    .foregroundColor(Theme.lose)
+                    .transition(.opacity)
+            } else if let locked = engine.lockedWord {
                 Text("Locked in: \(locked)")
                     .font(.system(.subheadline, design: .rounded).weight(.bold))
                     .foregroundColor(Theme.win)
@@ -179,6 +184,9 @@ struct MatchView: View {
                     .focused($inputFocused)
                     .disabled(engine.phase != .playing)
                     .onSubmit { engine.submitWord() }
+                    .onChange(of: engine.typedWord) { _, _ in
+                        engine.submissionFeedback = nil
+                    }
                 Button("Submit") { engine.submitWord() }
                     .buttonStyle(.borderedProminent)
                     .tint(Theme.accent)

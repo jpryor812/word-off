@@ -29,7 +29,7 @@ create policy "users update own profile"
 create table if not exists public.daily_scores (
   user_id uuid not null references public.profiles (id) on delete cascade,
   day date not null,
-  rack_size int not null check (rack_size between 5 and 9),
+  rack_size int not null check (rack_size between 6 and 10),
   score int not null check (score >= 0),
   created_at timestamptz not null default now(),
   primary key (user_id, day, rack_size)

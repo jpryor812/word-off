@@ -1,15 +1,18 @@
 # Word-Off!
 
 Quickfire word battles for iOS. Two players get the same 9 scrambled letters,
-20 seconds to type their best word, best of 7 rounds. Plus Wordle-style daily
+30 seconds to type their best word, best of 7 rounds. Plus Wordle-style daily
 challenges with global leaderboards.
 
 ## Game rules
 
 ### PvP (Quick Match / friend challenge)
-- 9 shared letters per round, Scrabble-style frequency
-- 20-second timer starts after the tiles flip and "GO!" appears
-- Free typing; submit locks your word, but you can edit and resubmit until 0:00
+- 9 shared letters per round — always an anagram of a real 9-letter word, so a
+  full-rack word is guaranteed to exist (racks are also picked to maximize how
+  many word lengths are playable)
+- 30-second timer starts after the tiles flip and "GO!" appears
+- Free typing; invalid words are rejected instantly with feedback so you can
+  keep trying; submit locks your word, but you can edit and resubmit until 0:00
 - **Scoring:** Scrabble letter values, +1 per letter beyond 4, +5 for using all
   9 letters, +2 for submitting a valid word first
 - Invalid word = 0 points; tied round = replay (no repeating your word);
@@ -20,8 +23,8 @@ challenges with global leaderboards.
   (skill tiers 1–10, believable usernames)
 
 ### Daily challenges
-- Five puzzles per day: 5, 6, 7, 8, and 9-letter racks
-- Each puzzle = 4 racks x 20 seconds, cumulative score
+- Five puzzles per day: 6, 7, 8, 9, and 10-letter racks
+- Each puzzle = 4 racks x 30 seconds, cumulative score
 - Everyone in the world gets identical racks (seeded by date)
 - Rankings show your rank and percentile per puzzle size
 - Free players pick 3 of the 5 puzzles; Premium unlocks all 5
@@ -52,7 +55,7 @@ WordOff/
   Services/              Supabase client, lives/streaks, StoreKit, persistence
   Views/                 SwiftUI screens
   UI/                    Theme + shared components
-  Resources/words.txt    ENABLE dictionary, filtered to 2-9 letter words
+  Resources/words.txt    ENABLE dictionary, filtered to 2-10 letter words
 supabase/schema.sql      Database schema (profiles, scores, friends, matches)
 ```
 
@@ -66,6 +69,13 @@ open WordOff.xcodeproj
 ```
 
 Then run on an iOS 17+ simulator or device.
+
+## Custom sounds
+
+Effects default to built-in iOS system sounds. To use your own, drop audio
+files named `whoosh`, `flip`, `tick`, `win`, `lose`, `error`, or `fanfare`
+(`.wav`, `.caf`, `.aiff`, `.mp3`, or `.m4a`) into `WordOff/Resources/`, run
+`xcodegen generate`, and rebuild — they're picked up automatically.
 
 ## Backend setup (optional — app runs fully offline without it)
 

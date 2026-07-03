@@ -32,6 +32,7 @@ final class MatchEngine: ObservableObject {
     @Published var matchOutcome: MatchOutcome?
     @Published var opponentHasSubmitted = false
     @Published var playerSatOut = false          // backgrounded during round
+    @Published var submissionFeedback: String?   // "XYZ isn't a word!" etc.
 
     let opponent: AIOpponent
     let opponentName: String
@@ -74,8 +75,9 @@ final class MatchEngine: ObservableObject {
         lockedAt = nil
         playerSatOut = false
         opponentHasSubmitted = false
+        submissionFeedback = nil
         secondsLeft = GameConstants.roundSeconds
-        rack = LetterBag.drawRack(size: GameConstants.pvpRackSize, rng: &seed)
+        rack = WordDictionary.shared.makeRack(size: GameConstants.pvpRackSize, rng: &seed)
 
         // Plan the AI's move up front, avoiding banned tie-replay words.
         var plan = opponent.play(rack: rack)
@@ -128,12 +130,29 @@ final class MatchEngine: ObservableObject {
         }
     }
 
-    /// Player taps Submit: locks the current word. They may edit and resubmit,
-    /// which updates the lock time (and can forfeit the speed bonus).
+    /// Player taps Submit. Invalid words are rejected with feedback so the
+    /// player can keep trying; only real, buildable words lock in. Resubmitting
+    /// updates the lock time (and can forfeit the speed bonus).
     func submitWord() {
         guard phase == .playing, let start = roundStart else { return }
         let word = typedWord.trimmingCharacters(in: .whitespaces).uppercased()
         guard !word.isEmpty else { return }
+        guard Scoring.isBuildable(word: word, from: rack) else {
+            submissionFeedback = "You can only use the letters on the rack!"
+            SoundPlayer.shared.play(.error)
+            return
+        }
+        guard WordDictionary.shared.contains(word) else {
+            submissionFeedback = "\(word) isn't a word — keep trying!"
+            SoundPlayer.shared.play(.error)
+            return
+        }
+        guard !bannedWords.contains(word) else {
+            submissionFeedback = "You can't reuse \(word) from the tied round!"
+            SoundPlayer.shared.play(.error)
+            return
+        }
+        submissionFeedback = nil
         lockedWord = word
         lockedAt = Date().timeIntervalSince(start)
         haptics.impact()

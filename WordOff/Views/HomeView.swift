@@ -112,7 +112,7 @@ struct HomeView: View {
             Text("QUICK MATCH")
                 .font(.system(.title3, design: .rounded).weight(.black))
                 .foregroundColor(Theme.tileText)
-            Text("7 rounds · 20 seconds each · first to 4 wins")
+            Text("7 rounds · \(GameConstants.roundSeconds) seconds each · first to 4 wins")
                 .font(.system(.caption, design: .rounded))
                 .foregroundColor(Theme.tileText.opacity(0.7))
             Button {
