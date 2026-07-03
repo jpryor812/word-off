@@ -29,7 +29,7 @@ final class WordDictionary {
         contents.enumerateLines { line, _ in
             let word = line.uppercased()
             let count = word.count
-            if count >= 2, count <= 10, !self.blocked.contains(word) {
+            if count >= 2, count <= 12, !self.blocked.contains(word) {
                 byLength[count, default: []].insert(word)
             }
         }

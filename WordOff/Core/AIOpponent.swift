@@ -1,7 +1,7 @@
 import Foundation
 
 /// Hidden AI opponent used when matchmaking can't find a human in time.
-/// Skill tier 1–10 controls word strength and submission speed.
+/// Skill tier 5–10 controls word strength and submission speed.
 struct AIOpponent {
     let username: String
     let tier: Int
@@ -17,7 +17,7 @@ struct AIOpponent {
     ]
 
     static func random() -> AIOpponent {
-        let tier = Int.random(in: 1...10)
+        let tier = Int.random(in: 5...10)
         let name = "\(namePrefixes.randomElement()!)\(nameSuffixes.randomElement()!)\(Int.random(in: 2...99))"
         return AIOpponent(username: name, tier: tier)
     }

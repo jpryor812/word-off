@@ -9,7 +9,7 @@ import SwiftUI
 /// - Streak break resets bonus lives to 0.
 /// - First friend game each day is free (doesn't consume a life).
 /// - Premium / daily pass: unlimited PvP, no life tracking.
-/// - Daily puzzles never consume lives; free users may play 3 of the 5 sizes.
+/// - Daily puzzles never consume lives; free users pick 3 of the daily sizes.
 @MainActor
 final class LivesManager: ObservableObject {
     @AppStorage("wordoff.lives.day") private var currentDay = ""

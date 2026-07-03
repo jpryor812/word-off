@@ -1,7 +1,7 @@
 # Word-Off!
 
 Quickfire word battles for iOS. Two players get the same 9 scrambled letters,
-30 seconds to type their best word, best of 7 rounds. Plus Wordle-style daily
+24 seconds to type their best word, best of 7 rounds. Plus Wordle-style daily
 challenges with global leaderboards.
 
 ## Game rules
@@ -10,7 +10,7 @@ challenges with global leaderboards.
 - 9 shared letters per round — always an anagram of a real 9-letter word, so a
   full-rack word is guaranteed to exist (racks are also picked to maximize how
   many word lengths are playable)
-- 30-second timer starts after the tiles flip and "GO!" appears
+- 24-second timer starts after the tiles flip and "GO!" appears
 - Free typing; invalid words are rejected instantly with feedback so you can
   keep trying; submit locks your word, but you can edit and resubmit until 0:00
 - **Scoring:** Scrabble letter values, +1 per letter beyond 4, +5 for using all
@@ -20,14 +20,16 @@ challenges with global leaderboards.
 - 7 rounds max, first to 4 round wins
 - Leaving the app mid-round forfeits that round (anti-cheat)
 - If matchmaking can't find a human in 15 seconds, you play a hidden AI
-  (skill tiers 1–10, believable usernames)
+  (skill tiers 5–10, believable usernames)
 
 ### Daily challenges
-- Five puzzles per day: 6, 7, 8, 9, and 10-letter racks
-- Each puzzle = 4 racks x 30 seconds, cumulative score
+- Seven puzzles per day: 6 through 12-letter racks
+- Each puzzle = 4 racks x 24 seconds, cumulative score
 - Everyone in the world gets identical racks (seeded by date)
 - Rankings show your rank and percentile per puzzle size
-- Free players pick 3 of the 5 puzzles; Premium unlocks all 5
+- Free players pick 3 of the 7 puzzles; Premium unlocks all 7
+- Tap a completed daily to review your words, best word, and the global
+  leaderboard (total score or top word per player)
 - Playable offline; scores sync to leaderboards when online
 
 ### Lives & streaks (free tier)
@@ -38,10 +40,11 @@ challenges with global leaderboards.
 - Daily challenges never cost lives
 
 ### Monetization
-- **Premium** `com.wordoff.premium.monthly` ($5.99/mo): all dailies, unlimited
+- **Premium** `com.wordoff.premium.monthly` ($4.99/mo): all dailies, unlimited
   PvP, no ads
-- **Day Pass** `com.wordoff.dailypass` ($1.99 consumable): same perks until
+- **Day Pass** `com.wordoff.dailypass` ($0.99 consumable): same perks until
   local midnight
+- Promo code `justintest` on the premium page grants free premium (testing)
 - Ads deferred until DAU justifies them
 
 ## Project structure
@@ -55,7 +58,7 @@ WordOff/
   Services/              Supabase client, lives/streaks, StoreKit, persistence
   Views/                 SwiftUI screens
   UI/                    Theme + shared components
-  Resources/words.txt    ENABLE dictionary, filtered to 2-10 letter words
+  Resources/words.txt    ENABLE dictionary, filtered to 2-12 letter words
 supabase/schema.sql      Database schema (profiles, scores, friends, matches)
 ```
 
@@ -93,8 +96,8 @@ leaderboards, and human matchmaking:
 ## App Store setup (for purchases)
 
 In App Store Connect create:
-- Auto-renewing subscription `com.wordoff.premium.monthly` at $5.99/month
-- Consumable `com.wordoff.dailypass` at $1.99
+- Auto-renewing subscription `com.wordoff.premium.monthly` at $4.99/month
+- Consumable `com.wordoff.dailypass` at $0.99
 
 Until these exist, the paywall shows placeholder pricing and free-tier rules apply.
 

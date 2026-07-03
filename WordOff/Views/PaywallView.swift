@@ -13,25 +13,10 @@ struct PaywallView: View {
             ZStack {
                 Theme.background.ignoresSafeArea()
                 ScrollView {
-                    VStack(spacing: 20) {
-                        Image(systemName: "crown.fill")
-                            .font(.system(size: 52))
-                            .foregroundColor(Theme.accent)
-                            .padding(.top, 30)
-
-                        Text("Word-Off! Premium")
-                            .font(.system(.title, design: .rounded).weight(.black))
-                            .foregroundColor(.white)
-
-                        VStack(alignment: .leading, spacing: 12) {
-                            benefit("All 5 daily puzzles, every day")
-                            benefit("Unlimited online games — no lives")
-                            benefit("No ads, ever")
-                        }
-                        .panel()
-
-                        productButtons
-
+                    VStack(spacing: 18) {
+                        header
+                        monthlyCard
+                        dayPassCard
                         promoSection
 
                         Button("Restore Purchases") {
@@ -57,34 +42,115 @@ struct PaywallView: View {
         }
     }
 
+    private var header: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "crown.fill")
+                .font(.system(size: 44))
+                .foregroundColor(Theme.accent)
+                .padding(.top, 16)
+            Text("Level Up Your Game")
+                .font(.system(.title, design: .rounded).weight(.black))
+                .foregroundColor(.white)
+            Text("Play without limits")
+                .font(.system(.subheadline, design: .rounded))
+                .foregroundColor(Theme.subtleText)
+        }
+    }
+
+    private var monthlyProduct: Product? {
+        app.entitlements.products.first { $0.id == EntitlementsManager.premiumID }
+    }
+
+    private var dayPassProduct: Product? {
+        app.entitlements.products.first { $0.id == EntitlementsManager.dailyPassID }
+    }
+
+    private var monthlyCard: some View {
+        VStack(spacing: 14) {
+            HStack {
+                Text("MONTHLY PASS")
+                    .font(.system(.headline, design: .rounded).weight(.black))
+                    .foregroundColor(Theme.tileText)
+                Spacer()
+                Text("BEST VALUE")
+                    .font(.system(.caption2, design: .rounded).weight(.black))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Capsule().fill(Theme.accent))
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(monthlyProduct?.displayPrice ?? "$4.99")
+                    .font(.system(size: 40, weight: .black, design: .rounded))
+                    .foregroundColor(Theme.accentDark)
+                Text("/month")
+                    .font(.system(.subheadline, design: .rounded).weight(.bold))
+                    .foregroundColor(Theme.tileText.opacity(0.6))
+                Spacer()
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                benefit("Unlimited PvP games")
+                benefit("Play all daily challenges")
+                benefit("No ads")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            purchaseButton(product: monthlyProduct, fallbackLabel: "Go Premium", color: Theme.accent)
+        }
+        .panel()
+        .overlay(
+            RoundedRectangle(cornerRadius: 18)
+                .stroke(Theme.accent, lineWidth: 2.5)
+        )
+    }
+
+    private var dayPassCard: some View {
+        VStack(spacing: 14) {
+            HStack {
+                Text("DAY PASS")
+                    .font(.system(.headline, design: .rounded).weight(.black))
+                    .foregroundColor(Theme.tileText)
+                Spacer()
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(dayPassProduct?.displayPrice ?? "$0.99")
+                    .font(.system(size: 40, weight: .black, design: .rounded))
+                    .foregroundColor(Theme.tileText)
+                Text("one time")
+                    .font(.system(.subheadline, design: .rounded).weight(.bold))
+                    .foregroundColor(Theme.tileText.opacity(0.6))
+                Spacer()
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                benefit("24 hours of everything in the Monthly Pass")
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            purchaseButton(product: dayPassProduct, fallbackLabel: "Get Day Pass", color: Theme.backgroundLight)
+        }
+        .panel()
+    }
+
     @ViewBuilder
-    private var productButtons: some View {
-        if app.entitlements.products.isEmpty {
-            VStack(spacing: 10) {
-                Text("Premium — $5.99/month")
-                Text("Day Pass — $1.99")
-                Text("(Purchases available once App Store Connect is configured)")
-                    .font(.system(.caption, design: .rounded))
-            }
-            .font(.system(.subheadline, design: .rounded).weight(.bold))
-            .foregroundColor(Theme.subtleText)
-        } else {
-            ForEach(app.entitlements.products, id: \.id) { product in
-                Button {
-                    Task {
-                        await app.entitlements.purchase(product)
-                        if app.entitlements.isPremium { dismiss() }
-                    }
-                } label: {
-                    VStack(spacing: 2) {
-                        Text(product.id == EntitlementsManager.premiumID
-                             ? "Go Premium — \(product.displayPrice)/month"
-                             : "Day Pass — \(product.displayPrice) today only")
-                    }
+    private func purchaseButton(product: Product?, fallbackLabel: String, color: Color) -> some View {
+        if let product {
+            Button {
+                Task {
+                    await app.entitlements.purchase(product)
+                    if app.entitlements.isPremium { dismiss() }
                 }
-                .buttonStyle(PrimaryButtonStyle(
-                    color: product.id == EntitlementsManager.premiumID ? Theme.accent : Theme.backgroundLight))
+            } label: {
+                Text(fallbackLabel)
             }
+            .buttonStyle(PrimaryButtonStyle(color: color))
+        } else {
+            Text("Available once App Store Connect is configured")
+                .font(.system(.caption, design: .rounded))
+                .foregroundColor(Theme.tileText.opacity(0.5))
         }
     }
 

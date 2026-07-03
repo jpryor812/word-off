@@ -2,8 +2,8 @@ import Foundation
 import StoreKit
 
 /// StoreKit 2 wrapper for the two products:
-/// - `com.wordoff.premium.monthly` ($5.99/mo): all dailies, unlimited PvP, no ads
-/// - `com.wordoff.dailypass` ($1.99 consumable): same benefits until local midnight
+/// - `com.wordoff.premium.monthly` ($4.99/mo): all dailies, unlimited PvP, no ads
+/// - `com.wordoff.dailypass` ($0.99 consumable): same benefits until local midnight
 @MainActor
 final class EntitlementsManager: ObservableObject {
     static let premiumID = "com.wordoff.premium.monthly"

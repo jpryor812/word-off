@@ -47,16 +47,44 @@ final class DailyStore: ObservableObject {
     private func sync(_ result: DailyPuzzleResult) async {
         guard SupabaseConfig.isConfigured,
               let session = SupabaseClient.shared.currentSession else { return }
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "user_id": session.userId,
             "day": result.date,
             "rack_size": result.rackSize,
             "score": result.totalScore,
         ]
+        if let best = result.bestWord {
+            payload["best_word"] = best.word
+            payload["best_word_score"] = best.score
+        }
         guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return }
         _ = try? await SupabaseClient.shared.request(
             table: "daily_scores", method: "POST", body: body,
             prefer: "resolution=merge-duplicates")
+    }
+
+    /// Top scores for one daily puzzle, with usernames and best words.
+    func fetchLeaderboard(day: String, rackSize: Int, limit: Int = 100) async -> [DailyLeaderboardEntry] {
+        guard SupabaseConfig.isConfigured else { return [] }
+        do {
+            let query = "day=eq.\(day)&rack_size=eq.\(rackSize)"
+                + "&select=score,best_word,best_word_score,profiles(username)"
+                + "&order=score.desc&limit=\(limit)"
+            let data = try await SupabaseClient.shared.request(table: "daily_scores", query: query)
+            guard let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+                return []
+            }
+            return rows.map { row in
+                let profile = row["profiles"] as? [String: Any]
+                return DailyLeaderboardEntry(
+                    username: profile?["username"] as? String ?? "Player",
+                    score: row["score"] as? Int ?? 0,
+                    bestWord: row["best_word"] as? String,
+                    bestWordScore: row["best_word_score"] as? Int)
+            }
+        } catch {
+            return []
+        }
     }
 
     /// Fetches rank + percentile for a submitted daily score.

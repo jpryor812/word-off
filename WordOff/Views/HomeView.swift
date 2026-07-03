@@ -49,6 +49,9 @@ struct HomeView: View {
                     friendUsername = nil
                     showMatch = true
                 }
+                if ProcessInfo.processInfo.arguments.contains("-demo-paywall") {
+                    showPaywall = true
+                }
                 #endif
             }
             .alert("Out of lives!", isPresented: $outOfLivesAlert) {

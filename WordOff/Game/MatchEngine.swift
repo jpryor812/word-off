@@ -10,7 +10,7 @@ final class MatchEngine: ObservableObject {
         case intro                     // "Round N" splash
         case flipping                  // tiles whoosh in and flip
         case go                        // "GO!" flash
-        case playing                   // 20s typing window
+        case playing                   // timed typing window
         case reveal                    // both words shown, winner highlighted
         case transition                // tiles slide out / new tiles slide in
         case matchOver

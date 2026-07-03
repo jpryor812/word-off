@@ -6,6 +6,7 @@ struct DailyHubView: View {
     @Binding var showPaywall: Bool
     @State private var activeDailySize: Int?
     @State private var limitAlert = false
+    @State private var detailResult: DailyPuzzleResult?
 
     private var today: String { DailySeed.todayString() }
 
@@ -31,7 +32,7 @@ struct DailyHubView: View {
                 Button {
                     showPaywall = true
                 } label: {
-                    Label("Unlock all 5 dailies", systemImage: "star.fill")
+                    Label("Unlock all \(GameConstants.dailyRackCounts.count) dailies", systemImage: "star.fill")
                 }
                 .buttonStyle(PrimaryButtonStyle(color: Theme.accentDark))
             }
@@ -42,17 +43,24 @@ struct DailyHubView: View {
             if ProcessInfo.processInfo.arguments.contains("-demo-daily") {
                 activeDailySize = 10
             }
+            if ProcessInfo.processInfo.arguments.contains("-demo-detail") {
+                detailResult = app.dailyStore.results.first
+            }
             #endif
         }
         .fullScreenCover(item: $activeDailySize) { size in
             DailyPlayView(rackSize: size)
                 .environmentObject(app)
         }
+        .sheet(item: $detailResult) { result in
+            DailyResultDetailView(result: result)
+                .environmentObject(app)
+        }
         .alert("Daily limit reached", isPresented: $limitAlert) {
             Button("Go Premium") { showPaywall = true }
             Button("OK", role: .cancel) {}
         } message: {
-            Text("Free players pick \(GameConstants.freeDailyPuzzlesPerDay) of the 5 daily puzzles. Get Premium or a Day Pass for all of them.")
+            Text("Free players pick \(GameConstants.freeDailyPuzzlesPerDay) of the \(GameConstants.dailyRackCounts.count) daily puzzles. Get Premium or a Day Pass for all of them.")
         }
     }
 
@@ -72,7 +80,7 @@ struct DailyHubView: View {
                     Text("\(size)-Letter Daily")
                         .font(.system(.subheadline, design: .rounded).weight(.bold))
                         .foregroundColor(Theme.tileText)
-                    Text(played != nil ? "Done — \(played!.totalScore) pts" : "4 racks · \(GameConstants.roundSeconds)s each")
+                    Text(played != nil ? "Done — \(played!.totalScore) pts · tap for results" : "4 racks · \(GameConstants.roundSeconds)s each")
                         .font(.system(.caption, design: .rounded))
                         .foregroundColor(Theme.tileText.opacity(0.6))
                 }
@@ -83,11 +91,13 @@ struct DailyHubView: View {
             .padding(10)
             .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.5)))
         }
-        .disabled(played != nil)
     }
 
     private func tapDaily(size: Int) {
-        guard app.dailyStore.result(day: today, rackSize: size) == nil else { return }
+        if let played = app.dailyStore.result(day: today, rackSize: size) {
+            detailResult = played
+            return
+        }
         if app.lives.unlockDailySize(size, isPremium: app.entitlements.isPremium) {
             activeDailySize = size
         } else {
@@ -98,6 +108,163 @@ struct DailyHubView: View {
 
 extension Int: @retroactive Identifiable {
     public var id: Int { self }
+}
+
+/// Detail screen for a completed daily: your words, best word, and the
+/// global leaderboard for that puzzle.
+struct DailyResultDetailView: View {
+    @EnvironmentObject var app: AppState
+    @Environment(\.dismiss) private var dismiss
+    let result: DailyPuzzleResult
+
+    @State private var entries: [DailyLeaderboardEntry] = []
+    @State private var isLoading = true
+    @State private var showBestWords = false
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Theme.background.ignoresSafeArea()
+                ScrollView {
+                    VStack(spacing: 16) {
+                        summaryCard
+                        wordsCard
+                        leaderboardCard
+                    }
+                    .padding()
+                }
+            }
+            .navigationTitle("\(result.rackSize)-Letter Daily")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { dismiss() }
+                }
+            }
+        }
+        .task { await loadLeaderboard() }
+    }
+
+    private var summaryCard: some View {
+        VStack(spacing: 8) {
+            Text("\(result.totalScore)")
+                .font(.system(size: 52, weight: .black, design: .rounded))
+                .foregroundColor(Theme.accentDark)
+            Text("TOTAL POINTS · \(result.date)")
+                .font(.system(.caption, design: .rounded).weight(.black))
+                .foregroundColor(Theme.tileText.opacity(0.5))
+            if let best = result.bestWord {
+                HStack(spacing: 8) {
+                    Image(systemName: "star.fill")
+                        .foregroundColor(Theme.accent)
+                    Text("Best word: \(best.word) — \(best.score) pts")
+                        .font(.system(.subheadline, design: .rounded).weight(.bold))
+                        .foregroundColor(Theme.tileText)
+                }
+                .padding(.top, 4)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .panel()
+    }
+
+    private var wordsCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("YOUR WORDS")
+                .font(.system(.caption, design: .rounded).weight(.black))
+                .foregroundColor(Theme.tileText.opacity(0.5))
+            ForEach(Array(result.roundScores.enumerated()), id: \.offset) { index, score in
+                HStack {
+                    Text("Rack \(index + 1)")
+                        .font(.system(.caption, design: .rounded).weight(.bold))
+                        .foregroundColor(Theme.tileText.opacity(0.5))
+                        .frame(width: 56, alignment: .leading)
+                    Text(result.words.indices.contains(index) ? (result.words[index] ?? "—") : "—")
+                        .font(.system(.subheadline, design: .rounded).weight(.bold))
+                        .foregroundColor(score > 0 ? Theme.tileText : Theme.lose)
+                    Spacer()
+                    Text("\(score) pts")
+                        .font(.system(.subheadline, design: .rounded).weight(.black))
+                        .foregroundColor(score > 0 ? Theme.accentDark : Theme.tileText.opacity(0.4))
+                }
+            }
+        }
+        .panel()
+    }
+
+    private var leaderboardCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("LEADERBOARD")
+                    .font(.system(.caption, design: .rounded).weight(.black))
+                    .foregroundColor(Theme.tileText.opacity(0.5))
+                Spacer()
+            }
+            Picker("View", selection: $showBestWords) {
+                Text("Total Score").tag(false)
+                Text("Top Word").tag(true)
+            }
+            .pickerStyle(.segmented)
+
+            if !SupabaseConfig.isConfigured {
+                emptyState("Connect a Supabase backend to see the global leaderboard.")
+            } else if isLoading {
+                HStack {
+                    Spacer()
+                    ProgressView().padding()
+                    Spacer()
+                }
+            } else if entries.isEmpty {
+                emptyState("No scores yet today — you might be first!")
+            } else {
+                ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                    HStack {
+                        Text("\(index + 1)")
+                            .font(.system(.subheadline, design: .rounded).weight(.black))
+                            .foregroundColor(index < 3 ? Theme.accent : Theme.tileText.opacity(0.5))
+                            .frame(width: 30, alignment: .leading)
+                        Text(entry.username)
+                            .font(.system(.subheadline, design: .rounded).weight(.bold))
+                            .foregroundColor(Theme.tileText)
+                            .lineLimit(1)
+                        Spacer()
+                        if showBestWords {
+                            if let word = entry.bestWord {
+                                Text(word)
+                                    .font(.system(.subheadline, design: .rounded).weight(.bold))
+                                    .foregroundColor(Theme.tileText)
+                                Text("\(entry.bestWordScore ?? 0)")
+                                    .font(.system(.subheadline, design: .rounded).weight(.black))
+                                    .foregroundColor(Theme.accentDark)
+                            } else {
+                                Text("—")
+                                    .foregroundColor(Theme.tileText.opacity(0.4))
+                            }
+                        } else {
+                            Text("\(entry.score) pts")
+                                .font(.system(.subheadline, design: .rounded).weight(.black))
+                                .foregroundColor(Theme.accentDark)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+        }
+        .panel()
+    }
+
+    private func emptyState(_ message: String) -> some View {
+        Text(message)
+            .font(.system(.subheadline, design: .rounded))
+            .foregroundColor(Theme.tileText.opacity(0.6))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+    }
+
+    private func loadLeaderboard() async {
+        entries = await app.dailyStore.fetchLeaderboard(day: result.date, rackSize: result.rackSize)
+        isLoading = false
+    }
 }
 
 /// Full-screen daily puzzle player.
@@ -166,7 +333,7 @@ struct DailyPlayView: View {
                 rackInterstitial
             } else {
                 RackView(rack: engine.rack, flipped: engine.phase != .flipping,
-                         tileSize: engine.rackSize > 8 ? 32 : engine.rackSize > 7 ? 36 : 44)
+                         tileSize: engine.rackSize > 10 ? 26 : engine.rackSize > 8 ? 32 : engine.rackSize > 7 ? 36 : 44)
                     .animation(.spring(duration: 0.5), value: engine.phase)
             }
 

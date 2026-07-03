@@ -50,7 +50,7 @@ struct RackView: View {
     var tileSize: CGFloat = 38
 
     var body: some View {
-        HStack(spacing: 5) {
+        HStack(spacing: tileSize < 30 ? 3 : 5) {
             ForEach(Array(rack.enumerated()), id: \.offset) { _, letter in
                 TileView(letter: letter, size: tileSize, flipped: flipped)
             }

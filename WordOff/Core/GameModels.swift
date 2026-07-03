@@ -2,13 +2,13 @@ import Foundation
 
 enum GameConstants {
     static let pvpRackSize = 9
-    static let roundSeconds = 30
+    static let roundSeconds = 24
     static let pvpRoundsToWin = 4
     static let pvpMaxRounds = 7
     static let matchmakingTimeoutSeconds = 15
     static let reconnectGraceSeconds = 20
     static let maxConsecutiveTiedReplays = 3
-    static let dailyRackCounts = [6, 7, 8, 9, 10]
+    static let dailyRackCounts = [6, 7, 8, 9, 10, 11, 12]
     static let dailyRoundsPerPuzzle = 4
     static let freeDailyPuzzlesPerDay = 3
     static let baseLivesPerDay = 5
@@ -64,6 +64,28 @@ struct DailyPuzzleResult: Codable, Identifiable {
     var words: [String?]
     var totalScore: Int
     var completedAt = Date()
+
+    /// Highest-scoring valid word of the run (invalid words are annotated "✕").
+    var bestWord: (word: String, score: Int)? {
+        var best: (String, Int)?
+        for (index, word) in words.enumerated() {
+            guard let word, !word.hasSuffix("✕"), index < roundScores.count,
+                  roundScores[index] > 0 else { continue }
+            if best == nil || roundScores[index] > best!.1 {
+                best = (word, roundScores[index])
+            }
+        }
+        return best
+    }
+}
+
+/// One row of a daily leaderboard fetched from Supabase.
+struct DailyLeaderboardEntry: Identifiable {
+    let id = UUID()
+    let username: String
+    let score: Int
+    let bestWord: String?
+    let bestWordScore: Int?
 }
 
 /// Identifies today's puzzle deterministically for every player.

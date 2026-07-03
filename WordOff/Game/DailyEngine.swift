@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 
-/// Drives one daily puzzle: 4 seeded racks of a given size, 20s each,
+/// Drives one daily puzzle: 4 seeded racks of a given size, timed rounds,
 /// cumulative score. Backgrounding forfeits the current rack (anti-cheat).
 @MainActor
 final class DailyEngine: ObservableObject {
