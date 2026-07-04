@@ -1,4 +1,4 @@
--- Word-Off! Supabase schema
+-- Worded Supabase schema
 -- Run in the Supabase SQL editor (or `supabase db push`) on a fresh project.
 
 -- =========================================================================

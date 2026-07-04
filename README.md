@@ -1,4 +1,4 @@
-# Word-Off!
+# Worded
 
 Quickfire word battles for iOS. Two players get the same 9 scrambled letters,
 24 seconds to type their best word, best of 7 rounds. Plus Wordle-style daily
@@ -13,8 +13,7 @@ challenges with global leaderboards.
 - 24-second timer starts after the tiles flip and "GO!" appears
 - Free typing; invalid words are rejected instantly with feedback so you can
   keep trying; submit locks your word, but you can edit and resubmit until 0:00
-- **Scoring:** Scrabble letter values, +1 per letter beyond 4, +5 for using all
-  9 letters, +2 for submitting a valid word first
+- **Scoring:** Scrabble letter values only; +1 for submitting a valid word first
 - Invalid word = 0 points; tied round = replay (no repeating your word);
   3 consecutive tied replays = match ends in a tie (doesn't affect W/L)
 - 7 rounds max, first to 4 round wins
@@ -40,9 +39,9 @@ challenges with global leaderboards.
 - Daily challenges never cost lives
 
 ### Monetization
-- **Premium** `com.wordoff.premium.monthly` ($4.99/mo): all dailies, unlimited
+- **Premium** `com.worded.premium.monthly` ($4.99/mo): all dailies, unlimited
   PvP, no ads
-- **Day Pass** `com.wordoff.dailypass` ($0.99 consumable): same perks until
+- **Day Pass** `com.worded.dailypass` ($0.99 consumable): same perks until
   local midnight
 - Promo code `justintest` on the premium page grants free premium (testing)
 - Ads deferred until DAU justifies them
@@ -51,7 +50,7 @@ challenges with global leaderboards.
 
 ```
 project.yml              XcodeGen project definition
-WordOff/
+Worded/
   App/                   App entry + root routing
   Core/                  Game engine: letters, scoring, dictionary, RNG, AI
   Game/                  Match + daily state machines (view models)
@@ -68,7 +67,7 @@ Requires Xcode 15+ and [XcodeGen](https://github.com/yonaskolb/XcodeGen).
 
 ```sh
 xcodegen generate
-open WordOff.xcodeproj
+open Worded.xcodeproj
 ```
 
 Then run on an iOS 17+ simulator or device.
@@ -77,7 +76,7 @@ Then run on an iOS 17+ simulator or device.
 
 Effects default to built-in iOS system sounds. To use your own, drop audio
 files named `whoosh`, `flip`, `tick`, `win`, `lose`, `error`, or `fanfare`
-(`.wav`, `.caf`, `.aiff`, `.mp3`, or `.m4a`) into `WordOff/Resources/`, run
+(`.wav`, `.caf`, `.aiff`, `.mp3`, or `.m4a`) into `Worded/Resources/`, run
 `xcodegen generate`, and rebuild — they're picked up automatically.
 
 ## Backend setup (optional — app runs fully offline without it)
@@ -89,15 +88,15 @@ leaderboards, and human matchmaking:
 1. Create a free project at [supabase.com](https://supabase.com)
 2. Run `supabase/schema.sql` in the SQL editor
 3. Enable Email and Apple providers under Authentication
-4. Set your keys in `WordOff/Services/SupabaseClient.swift` (`SupabaseConfig`)
+4. Set your keys in `Worded/Services/SupabaseClient.swift` (`SupabaseConfig`)
    or via the `SUPABASE_URL` / `SUPABASE_ANON_KEY` environment variables in the
    Xcode scheme
 
 ## App Store setup (for purchases)
 
 In App Store Connect create:
-- Auto-renewing subscription `com.wordoff.premium.monthly` at $4.99/month
-- Consumable `com.wordoff.dailypass` at $0.99
+- Auto-renewing subscription `com.worded.premium.monthly` at $4.99/month
+- Consumable `com.worded.dailypass` at $0.99
 
 Until these exist, the paywall shows placeholder pricing and free-tier rules apply.
 
