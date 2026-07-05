@@ -8,6 +8,7 @@ import StoreKit
 final class EntitlementsManager: ObservableObject {
     static let premiumID = "com.worded.premium.monthly"
     static let dailyPassID = "com.worded.dailypass"
+    static let matchRevealID = "com.worded.matchreveal"
 
     @Published private(set) var products: [Product] = []
     @Published private(set) var hasActiveSubscription = false
@@ -69,7 +70,7 @@ final class EntitlementsManager: ObservableObject {
 
     func refresh() async {
         do {
-            products = try await Product.products(for: [Self.premiumID, Self.dailyPassID])
+            products = try await Product.products(for: [Self.premiumID, Self.dailyPassID, Self.matchRevealID])
         } catch {
             // Products unavailable until App Store Connect is configured; free-tier rules apply.
         }
@@ -115,6 +116,32 @@ final class EntitlementsManager: ObservableObject {
             objectWillChange.send()
         default:
             break
+        }
+    }
+
+    var matchRevealProduct: Product? {
+        products.first { $0.id == Self.matchRevealID }
+    }
+
+    /// One-off $0.99 purchase to reveal the best possible words for a finished
+    /// match. Consumable — buy again for the next match. Returns true on success.
+    func purchaseMatchReveal() async -> Bool {
+        guard let product = matchRevealProduct else { return false }
+        do {
+            let result = try await product.purchase()
+            switch result {
+            case .success(let verification):
+                let transaction = try verification.payloadValue
+                await transaction.finish()
+                return true
+            case .userCancelled, .pending:
+                return false
+            @unknown default:
+                return false
+            }
+        } catch {
+            purchaseError = error.localizedDescription
+            return false
         }
     }
 

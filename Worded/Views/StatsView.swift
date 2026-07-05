@@ -12,6 +12,7 @@ struct StatsView: View {
                     VStack(spacing: 16) {
                         recordCard
                         streakCard
+                        badgesCard
                         dailyHistoryCard
                         matchHistoryCard
                         signOutButton
@@ -56,6 +57,60 @@ struct StatsView: View {
                 .foregroundColor(Theme.tileText)
         }
         .panel()
+    }
+
+    private var badgesCard: some View {
+        let tracks = BadgeCatalog.allTracks(
+            stats: app.badgeStore.stats,
+            loginStreak: app.lives.loginStreak,
+            dailyStreak: app.lives.dailyCompletionStreak,
+            todayWins: app.statsStore.todayRecord.wins,
+            winStreak: app.statsStore.winStreak)
+        let earnedCount = tracks.filter(\.isMaxed).count
+        let inProgress = tracks.filter { !$0.isMaxed && ($0.earnedTier != nil || $0.current > 0) }
+        let notStarted = tracks.filter { !$0.isMaxed && $0.earnedTier == nil && $0.current == 0 }
+
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("BADGES")
+                    .font(.system(.caption, design: .rounded).weight(.black))
+                    .foregroundColor(Theme.tileText.opacity(0.5))
+                Spacer()
+                Text("\(earnedCount + inProgress.count)/\(tracks.count) started")
+                    .font(.system(.caption2, design: .rounded).weight(.bold))
+                    .foregroundColor(Theme.tileText.opacity(0.45))
+            }
+
+            if !inProgress.isEmpty {
+                sectionHeader("In progress")
+                ForEach(inProgress.sorted { $0.progressFraction > $1.progressFraction }) { track in
+                    BadgeProgressRow(track: track)
+                }
+            }
+
+            if !notStarted.isEmpty {
+                sectionHeader("Not yet earned")
+                ForEach(notStarted) { track in
+                    BadgeProgressRow(track: track)
+                }
+            }
+
+            let maxed = tracks.filter(\.isMaxed)
+            if !maxed.isEmpty {
+                sectionHeader("Completed")
+                ForEach(maxed) { track in
+                    BadgeProgressRow(track: track)
+                }
+            }
+        }
+        .panel()
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.system(.caption2, design: .rounded).weight(.black))
+            .foregroundColor(Theme.accentDark.opacity(0.7))
+            .padding(.top, 4)
     }
 
     private var dailyHistoryCard: some View {

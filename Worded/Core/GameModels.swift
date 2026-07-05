@@ -8,7 +8,7 @@ enum GameConstants {
     static let matchmakingTimeoutSeconds = 15
     static let reconnectGraceSeconds = 20
     static let maxConsecutiveTiedReplays = 3
-    static let dailyRackCounts = [5, 6, 7, 8, 9, 10, 11, 12]
+    static let dailyRackCounts = [5, 6, 7, 8, 9, 10]
     static let dailyRoundsPerPuzzle = 4
     static let freeDailyPuzzlesPerDay = 3
     static let baseLivesPerDay = 5
@@ -20,6 +20,39 @@ enum GameConstants {
     static func dailySeconds(forRackSize size: Int) -> Int {
         size >= 10 ? 30 : roundSeconds
     }
+
+    /// Encodes tie-replay rounds into the submission `round` column (e.g. round 3
+    /// replay 1 → 301) so both clients stay in sync without schema changes.
+    static func submissionRoundKey(displayRound: Int, tieReplay: Int) -> Int {
+        displayRound * 100 + tieReplay
+    }
+}
+
+/// A human-vs-human match backed by Supabase (shared seed + submissions).
+struct OnlineMatchConfig: Equatable, Identifiable {
+    var id: String { matchId }
+    let matchId: String
+    let seed: String
+    let opponentUserId: String
+    let opponentUsername: String
+    let isChallenger: Bool
+
+    static func pvpRack(seed: String, round: Int, tieReplay: Int) -> [Character] {
+        var rng = SeededRandom(string: "\(seed)-round\(round)-tie\(tieReplay)")
+        return WordDictionary.shared.makeRack(size: GameConstants.pvpRackSize, rng: &rng)
+    }
+}
+
+/// A pending or resolved friend challenge stored in Supabase.
+struct MatchChallengeInvite: Identifiable, Equatable {
+    let id: String
+    let challengerId: String
+    let opponentId: String
+    let challengerUsername: String
+    let opponentUsername: String
+    let status: String
+    let seed: String
+    let matchId: String?
 }
 
 struct PlayerSubmission: Equatable, Codable {

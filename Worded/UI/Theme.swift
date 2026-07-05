@@ -13,6 +13,7 @@ enum Theme {
     static let accentDark = Color(red: 0.80, green: 0.42, blue: 0.10)
     static let win = Color(red: 0.35, green: 0.72, blue: 0.36)
     static let lose = Color(red: 0.85, green: 0.33, blue: 0.30)
+    static let speed = Color(red: 0.20, green: 0.55, blue: 0.95)         // fast-submit blue
     static let subtleText = Color.white.opacity(0.7)
 }
 

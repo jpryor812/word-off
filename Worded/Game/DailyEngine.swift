@@ -122,6 +122,13 @@ final class DailyEngine: ObservableObject {
         haptics.impact()
     }
 
+    /// Ends the current rack immediately once the player has locked a word in,
+    /// so they don't have to wait out the clock when they're happy with it.
+    func finishRoundEarly() {
+        guard phase == .playing, lockedWord != nil else { return }
+        endRack()
+    }
+
     func playerLeftApp() {
         guard phase == .playing else { return }
         satOut = true
@@ -213,5 +220,24 @@ enum DailySolver {
     /// Sum of the best common-word score on each rack — the "perfect" daily total.
     static func perfectScore(day: String, rackSize: Int) -> Int {
         solve(day: day, rackSize: rackSize).reduce(0) { $0 + $1.maxScore }
+    }
+
+    /// Highest-scoring word(s) buildable from an arbitrary rack (used by the
+    /// PvP match "top words" reveal). Prefers recognizable common words.
+    static func bestWords(from rack: [Character], limit: Int = 6) -> (score: Int, words: [String]) {
+        var pool = WordDictionary.shared.buildableCommonWords(from: rack)
+        if pool.isEmpty { pool = WordDictionary.shared.buildableWords(from: rack) }
+        var best = 0
+        var words: [String] = []
+        for word in pool {
+            let score = Scoring.score(word: word, rackSize: rack.count, firstSubmit: false).total
+            if score > best {
+                best = score
+                words = [word]
+            } else if score == best {
+                words.append(word)
+            }
+        }
+        return (best, Array(words.sorted().prefix(limit)))
     }
 }

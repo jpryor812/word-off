@@ -7,11 +7,14 @@ struct MatchView: View {
     @StateObject private var engine: MatchEngine
     @FocusState private var inputFocused: Bool
     @State private var outOfLives = false
+    @State private var topWordsByRound: [Int: (score: Int, words: [String])] = [:]
+    @State private var topWordsRevealed = false
+    @State private var revealBusy = false
 
-    init(friendUsername: String? = nil) {
+    init(onlineMatch: OnlineMatchConfig? = nil, challengeService: MatchChallengeService? = nil) {
         _engine = StateObject(wrappedValue: MatchEngine(
-            opponentName: friendUsername,
-            isFriendGame: friendUsername != nil))
+            onlineMatch: onlineMatch,
+            challengeService: challengeService))
     }
 
     var body: some View {
@@ -20,6 +23,8 @@ struct MatchView: View {
             switch engine.phase {
             case .searching:
                 searchingView
+            case .matchupIntro:
+                matchupIntroView
             case .intro:
                 roundIntro
             case .flipping, .go, .playing:
@@ -33,8 +38,28 @@ struct MatchView: View {
         .onAppear {
             engine.onMatchComplete = { record in
                 app.statsStore.record(match: record)
+                app.badgeStore.recordMatchComplete(
+                    outcome: record.outcome,
+                    playerRoundWins: record.playerRoundWins,
+                    opponentRoundWins: record.opponentRoundWins,
+                    totalRounds: record.rounds.count,
+                    todayWins: app.statsStore.todayRecord.wins,
+                    winStreak: app.statsStore.winStreak)
+            }
+            engine.onRoundScored = { round in
+                let rack = round.rack.compactMap { $0.first }
+                app.badgeStore.recordPvPRound(
+                    rack: rack,
+                    playerWord: round.player.word,
+                    playerBreakdown: round.player.breakdown)
             }
             engine.startMatch()
+        }
+        .task {
+            if engine.isOnlineMatch,
+               let stats = await app.badgeStore.fetchStats(forUsername: engine.opponentName) {
+                engine.opponentBadgeStats = stats
+            }
         }
         .onDisappear { engine.cancel() }
         .onChange(of: scenePhase) { _, newPhase in
@@ -56,12 +81,27 @@ struct MatchView: View {
             ProgressView()
                 .scaleEffect(1.6)
                 .tint(.white)
-            Text("Finding an opponent…")
+            Text(engine.isOnlineMatch ? "Connecting to \(engine.opponentName)…" : "Finding an opponent…")
                 .font(.system(.title3, design: .rounded).weight(.bold))
                 .foregroundColor(.white)
             Button("Cancel") { dismiss() }
                 .foregroundColor(Theme.subtleText)
         }
+    }
+
+    // MARK: - Matchup intro
+
+    private var matchupIntroView: some View {
+        MatchupIntroView(
+            playerName: app.username,
+            opponentName: engine.opponentName,
+            playerBadges: app.badgeStore.featuredBadges(
+                loginStreak: app.lives.loginStreak,
+                dailyStreak: app.lives.dailyCompletionStreak),
+            opponentBadges: BadgeCatalog.featured(
+                from: engine.opponentBadgeStats,
+                loginStreak: engine.opponentBadgeStats.loginStreakBest,
+                dailyStreak: engine.opponentBadgeStats.dailyStreakBest))
     }
 
     // MARK: - Round intro
@@ -283,6 +323,8 @@ struct MatchView: View {
                 }
                 .panel()
 
+                topWordsSection
+
                 ShareLink(item: shareText) {
                     Label("Share Result", systemImage: "square.and.arrow.up")
                 }
@@ -294,6 +336,8 @@ struct MatchView: View {
                     Label("Rematch", systemImage: "arrow.counterclockwise")
                 }
                 .buttonStyle(PrimaryButtonStyle())
+                .opacity(engine.isOnlineMatch ? 0 : 1)
+                .disabled(engine.isOnlineMatch)
 
                 Button("Back to Home") { dismiss() }
                     .foregroundColor(Theme.subtleText)
@@ -340,6 +384,89 @@ struct MatchView: View {
         return lines.joined(separator: "\n")
     }
 
+    // MARK: - Top words reveal ($0.99 or free for premium)
+
+    @ViewBuilder
+    private var topWordsSection: some View {
+        if topWordsRevealed {
+            VStack(alignment: .leading, spacing: 10) {
+                Label("Best possible words", systemImage: "trophy.fill")
+                    .font(.system(.headline, design: .rounded).weight(.black))
+                    .foregroundColor(Theme.tileText)
+                ForEach(Array(engine.rounds.enumerated()), id: \.offset) { index, _ in
+                    if let solution = topWordsByRound[index] {
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text("Round \(index + 1)")
+                                    .font(.system(.caption, design: .rounded).weight(.black))
+                                    .foregroundColor(Theme.tileText.opacity(0.5))
+                                Spacer()
+                                Text("\(solution.score) pts")
+                                    .font(.system(.caption, design: .rounded).weight(.black))
+                                    .foregroundColor(Theme.accentDark)
+                            }
+                            FlowLayout(spacing: 6) {
+                                ForEach(solution.words, id: \.self) { word in
+                                    Text(word)
+                                        .font(.system(.subheadline, design: .rounded).weight(.bold))
+                                        .foregroundColor(Theme.tileText)
+                                        .lineLimit(1)
+                                        .fixedSize()
+                                        .padding(.vertical, 4)
+                                        .padding(.horizontal, 9)
+                                        .background(Capsule().fill(Theme.tileFace))
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+            }
+            .panel()
+        } else {
+            Button {
+                Task { await revealTopWords() }
+            } label: {
+                if revealBusy {
+                    ProgressView().tint(.white)
+                } else {
+                    Label(revealButtonTitle, systemImage: "trophy.fill")
+                }
+            }
+            .buttonStyle(PrimaryButtonStyle(color: Theme.accentDark))
+            .disabled(revealBusy)
+        }
+    }
+
+    private var revealButtonTitle: String {
+        if app.entitlements.isPremium { return "Reveal Top Words" }
+        let price = app.entitlements.matchRevealProduct?.displayPrice ?? "$0.99"
+        return "Reveal Top Words · \(price)"
+    }
+
+    private func revealTopWords() async {
+        revealBusy = true
+        defer { revealBusy = false }
+
+        if !app.entitlements.isPremium {
+            let purchased = await app.entitlements.purchaseMatchReveal()
+            guard purchased else { return }
+        }
+
+        let rounds = engine.rounds
+        let solutions = await Task.detached(priority: .userInitiated) {
+            var result: [Int: (score: Int, words: [String])] = [:]
+            for (index, round) in rounds.enumerated() {
+                let rack = round.rack.compactMap { $0.first }
+                result[index] = DailySolver.bestWords(from: rack)
+            }
+            return result
+        }.value
+
+        topWordsByRound = solutions
+        topWordsRevealed = true
+    }
+
     private func requestRematch() {
         // Rematch costs a life for free users (both players must accept in
         // online play; vs AI it always accepts).
@@ -365,14 +492,31 @@ struct RoundRevealCard: View {
             submissionRow(
                 name: playerName,
                 submission: round.player,
-                isWinner: round.outcome == .playerWins)
+                isWinner: round.outcome == .playerWins,
+                isFaster: playerIsFaster)
             Divider()
             submissionRow(
                 name: opponentName,
                 submission: round.opponent,
-                isWinner: round.outcome == .opponentWins)
+                isWinner: round.outcome == .opponentWins,
+                isFaster: !playerIsFaster && opponentHasTime)
         }
         .panel()
+    }
+
+    /// Whichever valid submission came in with the lower elapsed time is faster.
+    private var playerIsFaster: Bool {
+        let p = round.player.isValid ? round.player.submittedAt : nil
+        let o = round.opponent.isValid ? round.opponent.submittedAt : nil
+        switch (p, o) {
+        case let (.some(pt), .some(ot)): return pt <= ot
+        case (.some, .none): return true
+        default: return false
+        }
+    }
+
+    private var opponentHasTime: Bool {
+        round.opponent.isValid && round.opponent.submittedAt != nil
     }
 
     private var roundBanner: String {
@@ -391,7 +535,7 @@ struct RoundRevealCard: View {
         }
     }
 
-    private func submissionRow(name: String, submission: PlayerSubmission, isWinner: Bool) -> some View {
+    private func submissionRow(name: String, submission: PlayerSubmission, isWinner: Bool, isFaster: Bool) -> some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
                 Text(name)
@@ -412,18 +556,12 @@ struct RoundRevealCard: View {
                         .font(.system(.subheadline, design: .rounded))
                         .foregroundColor(Theme.tileText.opacity(0.4))
                 }
-            }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 2) {
-                Text("\(submission.score)")
-                    .font(.system(.title, design: .rounded).weight(.black))
-                    .foregroundColor(isWinner ? Theme.win : Theme.tileText)
-                if let breakdown = submission.breakdown, breakdown.speedBonus > 0 {
-                    Text("+\(breakdown.speedBonus) speed")
-                        .font(.system(.caption2, design: .rounded))
-                        .foregroundColor(Theme.accentDark)
+                if submission.isValid, let seconds = submission.submittedAt {
+                    speedPill(seconds: seconds, isFaster: isFaster)
                 }
             }
+            Spacer()
+            scoreDisplay(submission: submission, isWinner: isWinner)
         }
         .overlay(alignment: .topTrailing) {
             if isWinner {
@@ -431,6 +569,56 @@ struct RoundRevealCard: View {
                     .foregroundColor(Theme.accent)
                     .offset(y: -8)
             }
+        }
+    }
+
+    /// Wind-speed style pill: shows how long the word took, in blue if this
+    /// player beat their opponent to the punch (and earned the speed bonus).
+    private func speedPill(seconds: TimeInterval, isFaster: Bool) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "wind")
+                .font(.system(size: 11, weight: .bold))
+            if isFaster {
+                Text("Speed Bonus!")
+                    .font(.system(.caption2, design: .rounded).weight(.black))
+            }
+            Text(String(format: "%.2fs", seconds))
+                .font(.system(.caption2, design: .rounded).weight(.black))
+                .monospacedDigit()
+        }
+        .foregroundColor(isFaster ? .white : Theme.tileText.opacity(0.6))
+        .padding(.vertical, 4)
+        .padding(.horizontal, 8)
+        .background(
+            Capsule().fill(isFaster ? Theme.speed : Theme.tileText.opacity(0.08))
+        )
+    }
+
+    /// Score readout. With a speed bonus it reads like "5 + 1 = 6": the base
+    /// letter score in black, the +1 speed bonus in blue, and the final total
+    /// in green (with the crown) when this player won the round.
+    private func scoreDisplay(submission: PlayerSubmission, isWinner: Bool) -> some View {
+        let total = submission.score
+        let speedBonus = submission.breakdown?.speedBonus ?? 0
+        let base = total - speedBonus
+        return HStack(alignment: .firstTextBaseline, spacing: 3) {
+            if submission.isValid && speedBonus > 0 {
+                Text("\(base)")
+                    .font(.system(.title2, design: .rounded).weight(.black))
+                    .foregroundColor(Theme.tileText)
+                Text("+")
+                    .font(.system(.title3, design: .rounded).weight(.bold))
+                    .foregroundColor(Theme.tileText.opacity(0.45))
+                Text("\(speedBonus)")
+                    .font(.system(.title2, design: .rounded).weight(.black))
+                    .foregroundColor(Theme.speed)
+                Text("=")
+                    .font(.system(.title3, design: .rounded).weight(.bold))
+                    .foregroundColor(Theme.tileText.opacity(0.45))
+            }
+            Text("\(total)")
+                .font(.system(.title, design: .rounded).weight(.black))
+                .foregroundColor(isWinner ? Theme.win : Theme.tileText)
         }
     }
 }

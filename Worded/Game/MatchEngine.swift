@@ -7,7 +7,8 @@ import SwiftUI
 final class MatchEngine: ObservableObject {
     enum Phase: Equatable {
         case searching                 // matchmaking spinner
-        case intro                     // "Round N" splash
+        case matchupIntro            // VS avatars + badges (once per match)
+        case intro                     // "Round N" splash (round 2+)
         case flipping                  // tiles whoosh in and flip
         case go                        // "GO!" flash
         case playing                   // timed typing window
@@ -33,10 +34,15 @@ final class MatchEngine: ObservableObject {
     @Published var opponentHasSubmitted = false
     @Published var playerSatOut = false          // backgrounded during round
     @Published var submissionFeedback: String?   // "XYZ isn't a word!" etc.
+    @Published var opponentBadgeStats: BadgeStats
 
     let opponent: AIOpponent
     let opponentName: String
     let isFriendGame: Bool
+    let onlineConfig: OnlineMatchConfig?
+    weak var challengeService: MatchChallengeService?
+
+    var isOnlineMatch: Bool { onlineConfig != nil }
 
     private var roundStart: Date?
     private var timerTask: Task<Void, Never>?
@@ -49,24 +55,54 @@ final class MatchEngine: ObservableObject {
     private let haptics = Haptics()
 
     var onMatchComplete: ((MatchRecord) -> Void)?
+    var onRoundScored: ((RoundResult) -> Void)?
 
-    init(opponentName: String? = nil, isFriendGame: Bool = false) {
+    init(
+        onlineMatch: OnlineMatchConfig? = nil,
+        opponentName: String? = nil,
+        isFriendGame: Bool = false,
+        challengeService: MatchChallengeService? = nil
+    ) {
         let ai = AIOpponent.random()
         self.opponent = ai
-        self.opponentName = opponentName ?? ai.username
-        self.isFriendGame = isFriendGame
+        self.onlineConfig = onlineMatch
+        self.challengeService = challengeService
+        self.isFriendGame = isFriendGame || onlineMatch != nil
+        if let onlineMatch {
+            self.opponentName = onlineMatch.opponentUsername
+            self.opponentBadgeStats = BadgeStats()
+        } else {
+            self.opponentName = opponentName ?? ai.username
+            self.opponentBadgeStats = BadgeCatalog.aiStats(tier: ai.tier)
+        }
+        if let seed = onlineMatch?.seed {
+            self.seed = SeededRandom(string: seed)
+        }
     }
 
     // MARK: - Match flow
 
     func startMatch() {
         phase = .searching
-        // Fake queue time so AI fallback is indistinguishable from a human match.
-        let queueDelay = Double.random(in: 2.5...9.0)
-        Task {
-            try? await Task.sleep(for: .seconds(queueDelay))
-            guard !Task.isCancelled else { return }
-            beginRound()
+        if isOnlineMatch {
+            Task {
+                try? await Task.sleep(for: .seconds(0.8))
+                guard !Task.isCancelled else { return }
+                phase = .matchupIntro
+                try? await Task.sleep(for: .seconds(2.8))
+                guard !Task.isCancelled else { return }
+                beginRound()
+            }
+        } else {
+            let queueDelay = Double.random(in: 2.5...9.0)
+            Task {
+                try? await Task.sleep(for: .seconds(queueDelay))
+                guard !Task.isCancelled else { return }
+                phase = .matchupIntro
+                try? await Task.sleep(for: .seconds(2.8))
+                guard !Task.isCancelled else { return }
+                beginRound()
+            }
         }
     }
 
@@ -79,25 +115,41 @@ final class MatchEngine: ObservableObject {
         roundEnding = false
         submissionFeedback = nil
         secondsLeft = GameConstants.roundSeconds
-        rack = WordDictionary.shared.makeRack(size: GameConstants.pvpRackSize, rng: &seed)
+        if let onlineConfig {
+            rack = OnlineMatchConfig.pvpRack(
+                seed: onlineConfig.seed,
+                round: roundNumber,
+                tieReplay: consecutiveTies)
+            opponentPlan = (nil, 99)
+        } else {
+            rack = WordDictionary.shared.makeRack(size: GameConstants.pvpRackSize, rng: &seed)
+            var plan = opponent.play(rack: rack)
+            if let word = plan.word, opponentBanned.contains(word) {
+                let alternatives = WordDictionary.shared.buildableWords(from: rack)
+                    .filter { !opponentBanned.contains($0) }
+                plan.word = alternatives.max {
+                    Scoring.score(word: $0, rackSize: rack.count, firstSubmit: false).total <
+                    Scoring.score(word: $1, rackSize: rack.count, firstSubmit: false).total
+                }
+            }
+            opponentPlan = plan
+        }
 
-        // Plan the AI's move up front, avoiding banned tie-replay words.
-        var plan = opponent.play(rack: rack)
-        if let word = plan.word, opponentBanned.contains(word) {
-            let alternatives = WordDictionary.shared.buildableWords(from: rack)
-                .filter { !opponentBanned.contains($0) }
-            plan.word = alternatives.max {
-                Scoring.score(word: $0, rackSize: rack.count, firstSubmit: false).total <
-                Scoring.score(word: $1, rackSize: rack.count, firstSubmit: false).total
+        if roundNumber == 1 {
+            startFlipSequence()
+        } else {
+            phase = .intro
+            Task {
+                try? await Task.sleep(for: .seconds(1.2))
+                startFlipSequence()
             }
         }
-        opponentPlan = plan
+    }
 
-        phase = .intro
+    private func startFlipSequence() {
+        phase = .flipping
+        SoundPlayer.shared.play(.whoosh)
         Task {
-            try? await Task.sleep(for: .seconds(1.2))
-            phase = .flipping
-            SoundPlayer.shared.play(.whoosh)
             try? await Task.sleep(for: .seconds(1.6))
             SoundPlayer.shared.play(.flip)
             phase = .go
@@ -124,6 +176,9 @@ final class MatchEngine: ObservableObject {
                 if !opponentHasSubmitted && elapsed >= opponentPlan.submitAt && opponentPlan.word != nil {
                     opponentHasSubmitted = true
                     checkBothSubmitted()
+                }
+                if isOnlineMatch {
+                    await pollOpponentSubmission()
                 }
                 if elapsed >= Double(GameConstants.roundSeconds) {
                     endRound()
@@ -161,6 +216,34 @@ final class MatchEngine: ObservableObject {
         lockedWord = word
         lockedAt = Date().timeIntervalSince(start)
         haptics.impact()
+        if let onlineConfig, let challengeService {
+            let roundKey = GameConstants.submissionRoundKey(
+                displayRound: roundNumber, tieReplay: consecutiveTies)
+            let ms = Int((lockedAt ?? 0) * 1000)
+            Task {
+                await challengeService.submitWord(
+                    matchId: onlineConfig.matchId,
+                    roundKey: roundKey,
+                    word: word,
+                    submittedMs: ms)
+            }
+        }
+        checkBothSubmitted()
+    }
+
+    private func pollOpponentSubmission() async {
+        guard !opponentHasSubmitted,
+              let onlineConfig,
+              let challengeService else { return }
+        let roundKey = GameConstants.submissionRoundKey(
+            displayRound: roundNumber, tieReplay: consecutiveTies)
+        let sub = await challengeService.fetchOpponentSubmission(
+            matchId: onlineConfig.matchId,
+            roundKey: roundKey,
+            opponentUserId: onlineConfig.opponentUserId)
+        guard let word = sub.word else { return }
+        opponentPlan = (word, sub.submittedAt ?? Double(GameConstants.roundSeconds))
+        opponentHasSubmitted = true
         checkBothSubmitted()
     }
 
@@ -205,6 +288,17 @@ final class MatchEngine: ObservableObject {
     private func endRound() {
         timerTask?.cancel()
 
+        if isOnlineMatch, !opponentHasSubmitted {
+            Task {
+                await pollOpponentSubmission()
+                finishEndRound()
+            }
+            return
+        }
+        finishEndRound()
+    }
+
+    private func finishEndRound() {
         // Auto-submit whatever is typed if never explicitly locked (no speed bonus applies anyway at deadline).
         var playerWord = lockedWord
         var playerTime = lockedAt
@@ -245,6 +339,7 @@ final class MatchEngine: ObservableObject {
             outcome: outcome, wasTieReplay: consecutiveTies > 0)
         rounds.append(result)
         lastRound = result
+        onRoundScored?(result)
 
         switch outcome {
         case .playerWins:

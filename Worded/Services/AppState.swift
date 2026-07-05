@@ -14,8 +14,16 @@ final class AppState: ObservableObject {
     let entitlements = EntitlementsManager()
     let dailyStore = DailyStore()
     let statsStore = StatsStore()
+    let badgeStore = BadgeStore()
+    let challengeService = MatchChallengeService()
+
+    @Published var onlineMatchToStart: OnlineMatchConfig?
+    @Published var challengeStatusMessage: String?
+    @Published var isWaitingForChallengeAccept = false
+    @Published var pendingInviteChallenge: MatchChallengeInvite?
 
     private var cancellables: Set<AnyCancellable> = []
+    private var pendingDeepLinkChallengeId: String?
 
     init() {
         // Forward child object changes so views observing AppState refresh
@@ -23,7 +31,9 @@ final class AppState: ObservableObject {
         for child in [lives.objectWillChange.eraseToAnyPublisher(),
                       entitlements.objectWillChange.eraseToAnyPublisher(),
                       dailyStore.objectWillChange.eraseToAnyPublisher(),
-                      statsStore.objectWillChange.eraseToAnyPublisher()] {
+                      statsStore.objectWillChange.eraseToAnyPublisher(),
+                      badgeStore.objectWillChange.eraseToAnyPublisher(),
+                      challengeService.objectWillChange.eraseToAnyPublisher()] {
             child
                 .receive(on: RunLoop.main)
                 .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -37,6 +47,9 @@ final class AppState: ObservableObject {
     func bootstrap() async {
         WordDictionary.shared.loadIfNeeded()
         lives.registerLogin()
+        badgeStore.refreshStreakBadges(
+            loginStreak: lives.loginStreak,
+            dailyStreak: lives.dailyCompletionStreak)
         await entitlements.refresh()
 
         if isLocalMode {
@@ -47,8 +60,103 @@ final class AppState: ObservableObject {
             }
         } else {
             await restoreOnlineSession()
+            await badgeStore.syncFromServer()
+            challengeService.startPolling()
         }
         isLoading = false
+        await processPendingDeepLinkIfNeeded()
+    }
+
+    private func openChallengeFromDeepLink(_ challengeId: String) async {
+        guard !isLocalMode else { return }
+        do {
+            _ = try await challengeService.fetchChallengeForDeepLink(id: challengeId)
+        } catch {
+            challengeStatusMessage = error.localizedDescription
+        }
+    }
+
+    @Published var pendingChallengeUsername: String?
+
+    func processPendingDeepLinkIfNeeded() async {
+        guard let challengeId = pendingDeepLinkChallengeId else { return }
+        pendingDeepLinkChallengeId = nil
+        await openChallengeFromDeepLink(challengeId)
+    }
+
+    func handleIncomingURL(_ url: URL) async {
+        if let challengeId = ChallengeInviteLink.challengeId(from: url) {
+            if session == nil || profile == nil {
+                pendingDeepLinkChallengeId = challengeId
+                return
+            }
+            await openChallengeFromDeepLink(challengeId)
+            return
+        }
+        if let username = ChallengeInviteLink.username(from: url) {
+            pendingChallengeUsername = username
+        }
+    }
+
+    func challengePolling(active: Bool) {
+        if active, !isLocalMode, session != nil {
+            challengeService.startPolling()
+        } else {
+            challengeService.stopPolling()
+        }
+    }
+
+    func sendFriendChallenge(to username: String) async throws {
+        guard !isLocalMode else { throw MatchChallengeError.notConfigured }
+        _ = try await challengeService.sendChallenge(toUsername: username)
+        isWaitingForChallengeAccept = true
+        pendingInviteChallenge = challengeService.outgoingChallenge
+        challengeStatusMessage = nil
+    }
+
+    func acceptIncomingChallenge() async {
+        guard let invite = challengeService.incomingChallenge else { return }
+        let canPlay = entitlements.isPremium
+            || lives.livesRemaining > 0
+            || lives.hasFreeFriendGame
+        guard canPlay else {
+            challengeStatusMessage = "You're out of lives — can't accept this challenge right now."
+            return
+        }
+        do {
+            onlineMatchToStart = try await challengeService.acceptChallenge(invite)
+            if !entitlements.isPremium {
+                _ = lives.consumeLife(isFriendGame: true)
+            }
+        } catch {
+            challengeStatusMessage = error.localizedDescription
+        }
+    }
+
+    func rejectIncomingChallenge() async {
+        guard let invite = challengeService.incomingChallenge else { return }
+        try? await challengeService.rejectChallenge(invite)
+    }
+
+    func cancelOutgoingChallenge() async {
+        await challengeService.cancelOutgoingChallenge()
+        isWaitingForChallengeAccept = false
+    }
+
+    func handleOutgoingChallengeUpdate() {
+        guard let invite = challengeService.outgoingChallenge,
+              let session else { return }
+
+        if invite.status == "accepted",
+           let config = challengeService.onlineConfig(for: invite, myUserId: session.userId) {
+            isWaitingForChallengeAccept = false
+            onlineMatchToStart = config
+            challengeService.clearRejectedOutgoing()
+        } else if invite.status == "rejected" {
+            isWaitingForChallengeAccept = false
+            challengeStatusMessage = "\(invite.opponentUsername) declined your challenge."
+            challengeService.clearRejectedOutgoing()
+        }
     }
 
     /// Restores a saved Supabase session when opened within the last 7 days.

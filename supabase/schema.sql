@@ -9,6 +9,7 @@ create table if not exists public.profiles (
   username text not null unique check (char_length(username) between 3 and 20),
   country text,
   is_premium boolean not null default false,
+  badge_stats jsonb not null default '{}'::jsonb,
   created_at timestamptz not null default now()
 );
 
@@ -29,7 +30,7 @@ create policy "users update own profile"
 create table if not exists public.daily_scores (
   user_id uuid not null references public.profiles (id) on delete cascade,
   day date not null,
-  rack_size int not null check (rack_size between 6 and 12),
+  rack_size int not null check (rack_size between 5 and 10),
   score int not null check (score >= 0),
   best_word text,
   best_word_score int,
@@ -133,3 +134,45 @@ create policy "participants write own submissions"
     select 1 from public.matches m
     where m.id = match_id and (auth.uid() = m.player_a or auth.uid() = m.player_b)
   ));
+
+-- =========================================================================
+-- Friend challenges (username → accept/reject → human match)
+-- =========================================================================
+create table if not exists public.match_challenges (
+  id uuid primary key default gen_random_uuid(),
+  challenger_id uuid not null references public.profiles (id) on delete cascade,
+  opponent_id uuid not null references public.profiles (id) on delete cascade,
+  status text not null default 'pending'
+    check (status in ('pending', 'accepted', 'rejected', 'cancelled', 'expired')),
+  seed text not null,
+  match_id uuid references public.matches (id) on delete set null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (challenger_id <> opponent_id)
+);
+
+create index if not exists match_challenges_opponent_pending
+  on public.match_challenges (opponent_id, status)
+  where status = 'pending';
+
+alter table public.match_challenges enable row level security;
+
+create policy "participants read challenges"
+  on public.match_challenges for select
+  using (auth.uid() = challenger_id or auth.uid() = opponent_id);
+
+create policy "challenger sends challenge"
+  on public.match_challenges for insert
+  with check (auth.uid() = challenger_id);
+
+create policy "participants update challenges"
+  on public.match_challenges for update
+  using (auth.uid() = challenger_id or auth.uid() = opponent_id);
+
+create policy "participants insert matches"
+  on public.matches for insert
+  with check (auth.uid() = player_a or auth.uid() = player_b);
+
+create policy "participants update matches"
+  on public.matches for update
+  using (auth.uid() = player_a or auth.uid() = player_b);

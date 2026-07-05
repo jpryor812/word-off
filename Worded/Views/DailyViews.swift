@@ -416,12 +416,28 @@ struct DailyPlayView: View {
                     .foregroundColor(Theme.subtleText)
             }
 
-            HStack {
+            HStack(alignment: .top) {
                 Label("\(engine.totalScore) pts", systemImage: "sum")
                     .font(.system(.subheadline, design: .rounded).weight(.bold))
                     .foregroundColor(Theme.accent)
                 Spacer()
-                timer
+                VStack(spacing: 8) {
+                    timer
+                    if engine.phase == .playing && engine.lockedWord != nil {
+                        Button {
+                            engine.finishRoundEarly()
+                        } label: {
+                            Label("Finish", systemImage: "checkmark")
+                                .font(.system(.caption, design: .rounded).weight(.bold))
+                                .foregroundColor(.white)
+                                .padding(.vertical, 6)
+                                .padding(.horizontal, 12)
+                                .background(Capsule().fill(Theme.win))
+                        }
+                        .transition(.scale.combined(with: .opacity))
+                    }
+                }
+                .animation(.spring(duration: 0.3), value: engine.lockedWord)
             }
 
             Spacer()
@@ -629,12 +645,25 @@ struct DailyPlayView: View {
         let day = engine.day
         let rackSize = engine.rackSize
         let score = engine.totalScore
+        let words = result.words
+        let roundScores = result.roundScores
         Task {
             standing = await app.dailyStore.fetchStanding(day: day, rackSize: rackSize, score: score)
             let perfect = await Task.detached(priority: .userInitiated) {
                 DailySolver.perfectScore(day: day, rackSize: rackSize)
             }.value
             perfectScore = perfect
+            app.badgeStore.recordDailyCompletion(
+                day: day,
+                rackSize: rackSize,
+                words: words,
+                roundScores: roundScores,
+                rank: standing?.rank,
+                total: standing?.total,
+                completedSizesToday: app.dailyStore.completedCount(day: day))
+            app.badgeStore.refreshStreakBadges(
+                loginStreak: app.lives.loginStreak,
+                dailyStreak: app.lives.dailyCompletionStreak)
         }
     }
 }

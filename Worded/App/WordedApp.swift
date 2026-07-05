@@ -36,10 +36,17 @@ struct RootView: View {
             }
         }
         .task { await app.bootstrap() }
+        .onOpenURL { url in
+            Task { await app.handleIncomingURL(url) }
+        }
         .onChange(of: scenePhase) { _, phase in
-            guard phase == .active else { return }
-            app.recordActivity()
-            app.enforceSessionRetention()
+            if phase == .active {
+                app.recordActivity()
+                app.enforceSessionRetention()
+                app.challengePolling(active: true)
+            } else {
+                app.challengePolling(active: false)
+            }
         }
     }
 }
