@@ -206,3 +206,161 @@ struct BadgeProgressRow: View {
         }
     }
 }
+
+// MARK: - End-game badge progress celebration
+
+struct BadgeProgressCelebrationView: View {
+    let deltas: [BadgeProgressDelta]
+    let onNext: () -> Void
+
+    var body: some View {
+        ZStack {
+            Theme.background.ignoresSafeArea()
+            VStack(spacing: 0) {
+                Text("BADGE PROGRESS")
+                    .font(.system(.title2, design: .rounded).weight(.black))
+                    .foregroundColor(.white)
+                    .padding(.top, 36)
+                    .padding(.bottom, 8)
+
+                Text(deltas.isEmpty
+                     ? "No badge progress this time — keep playing!"
+                     : "Here's what you unlocked this game")
+                    .font(.system(.subheadline, design: .rounded))
+                    .foregroundColor(Theme.subtleText)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 20)
+
+                ScrollView {
+                    VStack(spacing: 14) {
+                        ForEach(Array(deltas.enumerated()), id: \.element.id) { index, delta in
+                            BadgeProgressCelebrationRow(delta: delta, delay: Double(index) * 0.35)
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 12)
+                }
+
+                Button(action: onNext) {
+                    Text("Next")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .padding(.horizontal, 20)
+                .padding(.bottom, 28)
+                .padding(.top, 8)
+            }
+        }
+    }
+}
+
+private struct BadgeProgressCelebrationRow: View {
+    let delta: BadgeProgressDelta
+    let delay: Double
+
+    @State private var barFraction: Double = 0
+    @State private var showNewNumber = false
+    @State private var numberScale: CGFloat = 1
+    @State private var numberShake: CGFloat = 0
+
+    private var accent: Color {
+        if delta.newlyEarned {
+            return Theme.win
+        }
+        if let tier = delta.earnedTier {
+            return BadgeTier.color(for: tier)
+        }
+        if let next = delta.nextThreshold {
+            return BadgeTier.color(for: next)
+        }
+        return Theme.accent
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(accent.opacity(delta.newlyEarned || delta.earnedTier != nil ? 1 : 0.25))
+                        .frame(width: 40, height: 40)
+                    Image(systemName: delta.kind.icon)
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundColor(delta.newlyEarned || delta.earnedTier != nil ? .white : accent)
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(delta.kind.label)
+                            .font(.system(.headline, design: .rounded).weight(.bold))
+                            .foregroundColor(Theme.tileText)
+                        if delta.newlyEarned {
+                            Text("NEW!")
+                                .font(.system(.caption2, design: .rounded).weight(.black))
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(Capsule().fill(Theme.win))
+                        }
+                    }
+                    Text(delta.kind.detail)
+                        .font(.system(.caption2, design: .rounded))
+                        .foregroundColor(Theme.tileText.opacity(0.55))
+                        .lineLimit(2)
+                }
+
+                Spacer(minLength: 0)
+
+                Text(showNewNumber ? delta.toLabel : delta.fromLabel)
+                    .font(.system(.subheadline, design: .rounded).weight(.black))
+                    .foregroundColor(Theme.tileText)
+                    .scaleEffect(numberScale)
+                    .offset(x: numberShake)
+            }
+
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Theme.tileText.opacity(0.12))
+                    Capsule()
+                        .fill(accent)
+                        .frame(width: max(4, geo.size.width * barFraction))
+                }
+            }
+            .frame(height: 10)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 16).fill(Theme.panel))
+        .onAppear { runAnimation() }
+    }
+
+    private func runAnimation() {
+        barFraction = delta.fromFraction
+        showNewNumber = false
+        numberScale = 1
+        numberShake = 0
+
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(0.25 + delay))
+            withAnimation(.easeInOut(duration: 0.85)) {
+                barFraction = delta.toFraction
+            }
+            try? await Task.sleep(for: .seconds(0.9))
+            showNewNumber = true
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.45)) {
+                numberScale = 1.35
+            }
+            // Shake left-right for ~1s
+            for _ in 0..<6 {
+                withAnimation(.easeInOut(duration: 0.08)) { numberShake = 5 }
+                try? await Task.sleep(for: .seconds(0.08))
+                withAnimation(.easeInOut(duration: 0.08)) { numberShake = -5 }
+                try? await Task.sleep(for: .seconds(0.08))
+            }
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.7)) {
+                numberShake = 0
+                numberScale = 1
+            }
+        }
+    }
+}

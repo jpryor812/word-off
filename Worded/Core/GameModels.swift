@@ -124,6 +124,27 @@ extension DailyPuzzleResult {
     func topWordsUnlocked(isPremium: Bool, today: String = DailySeed.todayString()) -> Bool {
         isPremium || date < today
     }
+
+    func shareText(
+        perfectScore: Int? = nil,
+        standing: (rank: Int, total: Int)? = nil
+    ) -> String {
+        var lines = ["Worded \(rackSize)-Letter Daily — \(totalScore) pts"]
+        for (index, score) in roundScores.enumerated() {
+            let length = words[index]?.replacingOccurrences(of: " ✕", with: "").count ?? 0
+            let blurred = length > 0 ? String(repeating: "▮", count: length) : "—"
+            lines.append("Rack \(index + 1): \(blurred) \(score) pts")
+        }
+        if let perfectScore {
+            lines.append("Best possible: \(perfectScore) pts")
+        }
+        if let standing {
+            let percentile = max(1, 100 - Int((Double(standing.rank) / Double(standing.total)) * 100))
+            lines.append("\(standing.rank)/\(standing.total) · \(percentile)th percentile")
+        }
+        lines.append("Play today's puzzle: worded.app")
+        return lines.joined(separator: "\n")
+    }
 }
 
 /// One row of a daily leaderboard fetched from Supabase.

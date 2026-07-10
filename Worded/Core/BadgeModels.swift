@@ -238,6 +238,50 @@ struct BadgeTrackItem: Identifiable, Equatable {
     }
 }
 
+/// A badge that moved forward during a match or daily — used for the end-game celebration.
+struct BadgeProgressDelta: Identifiable, Equatable {
+    let kind: BadgeKind
+    let fromCurrent: Int
+    let toCurrent: Int
+    let nextThreshold: Int?
+    let earnedTier: Int?
+    let newlyEarned: Bool
+
+    var id: BadgeKind { kind }
+
+    var fromFraction: Double {
+        guard let next = nextThreshold, next > 0 else {
+            return newlyEarned || earnedTier != nil ? 1 : 0
+        }
+        return min(1, Double(fromCurrent) / Double(next))
+    }
+
+    var toFraction: Double {
+        guard let next = nextThreshold, next > 0 else {
+            return newlyEarned || earnedTier != nil ? 1 : 0
+        }
+        return min(1, Double(toCurrent) / Double(next))
+    }
+
+    var fromLabel: String { countLabel(fromCurrent) }
+    var toLabel: String { countLabel(toCurrent) }
+
+    private func countLabel(_ value: Int) -> String {
+        switch kind {
+        case .dailyPercentile:
+            if value > 0 { return "Top \(value)%" }
+            return "—"
+        case .flawlessDaily, .cleanSweep, .fullMenuDaily:
+            return value >= 1 ? "Earned" : "0/1"
+        default:
+            if let next = nextThreshold {
+                return "\(value)/\(next)"
+            }
+            return "\(value)"
+        }
+    }
+}
+
 struct EarnedBadge: Identifiable, Equatable {
     let kind: BadgeKind
     let tier: Int
@@ -470,6 +514,49 @@ enum BadgeCatalog {
             nextThreshold: count >= 1 ? nil : 1,
             earnedTier: count >= 1 ? 1 : nil,
             detail: kind.detail)
+    }
+
+    /// Badges whose progress increased between two snapshots (for end-game celebration).
+    static func progressDeltas(
+        before: [BadgeTrackItem],
+        after: [BadgeTrackItem]
+    ) -> [BadgeProgressDelta] {
+        let beforeByKind = Dictionary(uniqueKeysWithValues: before.map { ($0.kind, $0) })
+        var deltas: [BadgeProgressDelta] = []
+
+        for afterItem in after {
+            let beforeItem = beforeByKind[afterItem.kind]
+            let from = beforeItem?.current ?? 0
+            let to = afterItem.current
+            let wasEarned = beforeItem?.earnedTier != nil
+            let isEarned = afterItem.earnedTier != nil
+            let newlyEarned = !wasEarned && isEarned
+
+            // Percentile: lower number is better (Top 5% beats Top 25%).
+            let improved: Bool = {
+                switch afterItem.kind {
+                case .dailyPercentile:
+                    if from == 0 { return to > 0 }
+                    return to > 0 && to < from
+                default:
+                    return to > from || newlyEarned
+                }
+            }()
+
+            guard improved else { continue }
+
+            // Prefer the destination tier's next threshold for the bar animation.
+            let threshold = afterItem.nextThreshold ?? beforeItem?.nextThreshold
+            deltas.append(BadgeProgressDelta(
+                kind: afterItem.kind,
+                fromCurrent: from,
+                toCurrent: to,
+                nextThreshold: threshold,
+                earnedTier: afterItem.earnedTier,
+                newlyEarned: newlyEarned))
+        }
+
+        return deltas.sorted { $0.kind.rarity > $1.kind.rarity }
     }
 
     /// Plausible badge stats for AI opponents based on skill tier.

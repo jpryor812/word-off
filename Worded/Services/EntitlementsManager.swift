@@ -13,11 +13,28 @@ final class EntitlementsManager: ObservableObject {
     @Published private(set) var products: [Product] = []
     @Published private(set) var hasActiveSubscription = false
     @Published var purchaseError: String?
-    @Published private(set) var hasPromoPremium =
-        UserDefaults.standard.bool(forKey: "worded.promo.premium")
 
-    /// Promo codes and what they grant. `justintest` = free premium (testing).
+    /// Promo codes and what they grant. `justintest` = 24 hours of premium (testing).
     private static let promoCodes: Set<String> = ["JUSTINTEST"]
+    private static let promoExpiryKey = "worded.promo.premium.expiresAt"
+    private static let legacyPromoKey = "worded.promo.premium"
+    private static let promoDuration: TimeInterval = 24 * 60 * 60
+
+    private var promoExpiryDate: Date? {
+        get { UserDefaults.standard.object(forKey: Self.promoExpiryKey) as? Date }
+        set {
+            if let newValue {
+                UserDefaults.standard.set(newValue, forKey: Self.promoExpiryKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: Self.promoExpiryKey)
+            }
+        }
+    }
+
+    var hasPromoPremium: Bool {
+        guard let expiry = promoExpiryDate else { return false }
+        return Date() < expiry
+    }
 
     private var dailyPassDay: String {
         get { UserDefaults.standard.string(forKey: "worded.dailyPass.day") ?? "" }
@@ -27,6 +44,9 @@ final class EntitlementsManager: ObservableObject {
     private var updatesTask: Task<Void, Never>?
 
     init() {
+        if UserDefaults.standard.bool(forKey: Self.legacyPromoKey), promoExpiryDate == nil {
+            UserDefaults.standard.set(false, forKey: Self.legacyPromoKey)
+        }
         updatesTask = Task { [weak self] in
             for await update in Transaction.updates {
                 if let transaction = try? update.payloadValue {
@@ -50,15 +70,17 @@ final class EntitlementsManager: ObservableObject {
     func redeemPromo(code: String) -> Bool {
         let normalized = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
         guard Self.promoCodes.contains(normalized) else { return false }
-        hasPromoPremium = true
-        UserDefaults.standard.set(true, forKey: "worded.promo.premium")
+        promoExpiryDate = Date().addingTimeInterval(Self.promoDuration)
+        UserDefaults.standard.set(false, forKey: Self.legacyPromoKey)
+        objectWillChange.send()
         return true
     }
 
     /// Removes promo premium (handy for testing the free tier again).
     func clearPromo() {
-        hasPromoPremium = false
-        UserDefaults.standard.set(false, forKey: "worded.promo.premium")
+        promoExpiryDate = nil
+        UserDefaults.standard.set(false, forKey: Self.legacyPromoKey)
+        objectWillChange.send()
     }
 
     private static func localDayString() -> String {

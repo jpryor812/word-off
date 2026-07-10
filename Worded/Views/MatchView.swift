@@ -10,6 +10,9 @@ struct MatchView: View {
     @State private var topWordsByRound: [Int: (score: Int, words: [String])] = [:]
     @State private var topWordsRevealed = false
     @State private var revealBusy = false
+    @State private var badgeSnapshot: [BadgeTrackItem] = []
+    @State private var badgeDeltas: [BadgeProgressDelta] = []
+    @State private var showBadgeCelebration = false
 
     init(onlineMatch: OnlineMatchConfig? = nil, challengeService: MatchChallengeService? = nil) {
         _engine = StateObject(wrappedValue: MatchEngine(
@@ -32,10 +35,22 @@ struct MatchView: View {
             case .reveal, .transition:
                 revealView
             case .matchOver:
-                matchOverView
+                if showBadgeCelebration {
+                    BadgeProgressCelebrationView(deltas: badgeDeltas) {
+                        app.finishOnlineMatch()
+                        dismiss()
+                    }
+                } else {
+                    matchOverView
+                }
             }
         }
         .onAppear {
+            badgeSnapshot = app.badgeStore.currentTracks(
+                loginStreak: app.lives.loginStreak,
+                dailyStreak: app.lives.dailyCompletionStreak,
+                todayWins: app.statsStore.todayRecord.wins,
+                winStreak: app.statsStore.winStreak)
             engine.onMatchComplete = { record in
                 app.statsStore.record(match: record)
                 app.badgeStore.recordMatchComplete(
@@ -45,6 +60,13 @@ struct MatchView: View {
                     totalRounds: record.rounds.count,
                     todayWins: app.statsStore.todayRecord.wins,
                     winStreak: app.statsStore.winStreak)
+                badgeDeltas = BadgeCatalog.progressDeltas(
+                    before: badgeSnapshot,
+                    after: app.badgeStore.currentTracks(
+                        loginStreak: app.lives.loginStreak,
+                        dailyStreak: app.lives.dailyCompletionStreak,
+                        todayWins: app.statsStore.todayRecord.wins,
+                        winStreak: app.statsStore.winStreak))
             }
             engine.onRoundScored = { round in
                 let rack = round.rack.compactMap { $0.first }
@@ -84,7 +106,10 @@ struct MatchView: View {
             Text(engine.isOnlineMatch ? "Connecting to \(engine.opponentName)…" : "Finding an opponent…")
                 .font(.system(.title3, design: .rounded).weight(.bold))
                 .foregroundColor(.white)
-            Button("Cancel") { dismiss() }
+            Button("Cancel") {
+                app.finishOnlineMatch()
+                dismiss()
+            }
                 .foregroundColor(Theme.subtleText)
         }
     }
@@ -127,43 +152,48 @@ struct MatchView: View {
     // MARK: - Game board
 
     private var gameBoard: some View {
-        VStack(spacing: 16) {
-            scoreHeader
+        GeometryReader { geo in
+            let tileSize = RackLayout.tileSize(letterCount: engine.rack.count, in: geo.size)
 
-            timerView
+            VStack(spacing: 16) {
+                scoreHeader
 
-            Spacer()
+                timerView
 
-            if engine.phase == .go {
-                Text("GO!")
-                    .font(.system(size: 64, weight: .black, design: .rounded))
-                    .foregroundColor(Theme.accent)
-                    .transition(.scale)
-            }
+                Spacer()
 
-            RackView(rack: engine.rack, flipped: engine.phase != .flipping, tileSize: 38)
-                .animation(.spring(duration: 0.5), value: engine.rack)
-                .animation(.spring(duration: 0.5), value: engine.phase)
-
-            if engine.phase == .playing && engine.lockedWord == nil {
-                Button {
-                    engine.shuffleRack()
-                } label: {
-                    Label("Shuffle", systemImage: "shuffle")
-                        .font(.system(.subheadline, design: .rounded).weight(.bold))
-                        .foregroundColor(.white)
-                        .padding(.vertical, 8)
-                        .padding(.horizontal, 18)
-                        .background(Capsule().fill(Theme.backgroundLight))
+                if engine.phase == .go {
+                    Text("GO!")
+                        .font(.system(size: 64, weight: .black, design: .rounded))
+                        .foregroundColor(Theme.accent)
+                        .transition(.scale)
                 }
-                .padding(.top, 4)
+
+                RackView(rack: engine.rack, flipped: engine.phase != .flipping, tileSize: tileSize)
+                    .animation(.spring(duration: 0.5), value: engine.rack)
+                    .animation(.spring(duration: 0.5), value: engine.phase)
+
+                if engine.phase == .playing && engine.lockedWord == nil {
+                    Button {
+                        engine.shuffleRack()
+                    } label: {
+                        Label("Shuffle", systemImage: "shuffle")
+                            .font(.system(.subheadline, design: .rounded).weight(.bold))
+                            .foregroundColor(.white)
+                            .padding(.vertical, 8)
+                            .padding(.horizontal, 18)
+                            .background(Capsule().fill(Theme.backgroundLight))
+                    }
+                    .padding(.top, 4)
+                }
+
+                Spacer()
+
+                inputArea
             }
-
-            Spacer()
-
-            inputArea
+            .padding()
+            .frame(width: geo.size.width, height: geo.size.height)
         }
-        .padding()
         .onChange(of: engine.phase) { _, newPhase in
             if newPhase == .playing { inputFocused = true }
         }
@@ -339,7 +369,14 @@ struct MatchView: View {
                 .opacity(engine.isOnlineMatch ? 0 : 1)
                 .disabled(engine.isOnlineMatch)
 
-                Button("Back to Home") { dismiss() }
+                Button("Back to Home") {
+                    if badgeDeltas.isEmpty {
+                        app.finishOnlineMatch()
+                        dismiss()
+                    } else {
+                        showBadgeCelebration = true
+                    }
+                }
                     .foregroundColor(Theme.subtleText)
                     .padding(.bottom, 30)
             }
@@ -471,6 +508,13 @@ struct MatchView: View {
         // Rematch costs a life for free users (both players must accept in
         // online play; vs AI it always accepts).
         if app.entitlements.isPremium || app.lives.consumeLife() {
+            badgeSnapshot = app.badgeStore.currentTracks(
+                loginStreak: app.lives.loginStreak,
+                dailyStreak: app.lives.dailyCompletionStreak,
+                todayWins: app.statsStore.todayRecord.wins,
+                winStreak: app.statsStore.winStreak)
+            badgeDeltas = []
+            showBadgeCelebration = false
             engine.rematch()
         } else {
             outOfLives = true

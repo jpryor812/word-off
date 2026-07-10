@@ -25,6 +25,20 @@ final class BadgeStore: ObservableObject {
         BadgeCatalog.featured(from: stats, loginStreak: loginStreak, dailyStreak: dailyStreak)
     }
 
+    func currentTracks(
+        loginStreak: Int,
+        dailyStreak: Int,
+        todayWins: Int,
+        winStreak: Int
+    ) -> [BadgeTrackItem] {
+        BadgeCatalog.allTracks(
+            stats: stats,
+            loginStreak: loginStreak,
+            dailyStreak: dailyStreak,
+            todayWins: todayWins,
+            winStreak: winStreak)
+    }
+
     // MARK: - Recording events
 
     func recordDailyCompletion(

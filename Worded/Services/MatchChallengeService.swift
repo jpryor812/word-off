@@ -33,6 +33,26 @@ final class MatchChallengeService: ObservableObject {
     @Published private(set) var outgoingChallenge: MatchChallengeInvite?
 
     private var pollTask: Task<Void, Never>?
+    private static let startedMatchIdsKey = "worded.challenge.startedMatchIds"
+
+    /// Match IDs we've already launched — prevents re-opening stale accepted challenges.
+    private var startedMatchIds: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: Self.startedMatchIdsKey) ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: Self.startedMatchIdsKey) }
+    }
+
+    func hasStartedMatch(_ matchId: String) -> Bool {
+        startedMatchIds.contains(matchId)
+    }
+
+    func markMatchStarted(_ matchId: String) {
+        var ids = startedMatchIds
+        ids.insert(matchId)
+        startedMatchIds = ids
+        if outgoingChallenge?.matchId == matchId {
+            outgoingChallenge = nil
+        }
+    }
 
     func startPolling() {
         guard SupabaseConfig.isConfigured, SupabaseClient.shared.currentSession != nil else { return }
@@ -181,6 +201,12 @@ final class MatchChallengeService: ObservableObject {
         }
     }
 
+    func clearAcceptedOutgoing() {
+        if outgoingChallenge?.status == "accepted" {
+            outgoingChallenge = nil
+        }
+    }
+
     func onlineConfig(for challenge: MatchChallengeInvite, myUserId: String) -> OnlineMatchConfig? {
         guard challenge.status == "accepted", let matchId = challenge.matchId else { return nil }
         let isChallenger = challenge.challengerId == myUserId
@@ -313,20 +339,42 @@ final class MatchChallengeService: ObservableObject {
 
     private func refreshOutgoing(for userId: String) async {
         do {
-            let data = try await SupabaseClient.shared.request(
-                table: "match_challenges",
-                query: "challenger_id=eq.\(userId)&status=in.(pending,accepted,rejected)&order=updated_at.desc&limit=1&select=*")
-            guard let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]],
-                  let row = rows.first,
-                  let invite = await enrichWithUsernames(parseChallenge(row, challengerUsername: nil, opponentUsername: nil)) else {
+            if let pending = try await fetchLatestChallenge(
+                challengerId: userId, status: "pending") {
+                outgoingChallenge = pending
                 return
             }
-            if invite.status == "pending" || invite.status == "accepted" {
-                outgoingChallenge = invite
-            } else if invite.status == "rejected" {
-                outgoingChallenge = invite
+
+            if let accepted = try await fetchLatestChallenge(
+                challengerId: userId, status: "accepted"),
+               let matchId = accepted.matchId,
+               !hasStartedMatch(matchId) {
+                outgoingChallenge = accepted
+                return
+            }
+
+            if outgoingChallenge?.status == "pending" || outgoingChallenge?.status == "accepted" {
+                outgoingChallenge = nil
+            }
+
+            if outgoingChallenge == nil,
+               let rejected = try await fetchLatestChallenge(
+                challengerId: userId, status: "rejected") {
+                outgoingChallenge = rejected
             }
         } catch {}
+    }
+
+    private func fetchLatestChallenge(
+        challengerId: String,
+        status: String
+    ) async throws -> MatchChallengeInvite? {
+        let data = try await SupabaseClient.shared.request(
+            table: "match_challenges",
+            query: "challenger_id=eq.\(challengerId)&status=eq.\(status)&order=updated_at.desc&limit=1&select=*")
+        guard let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+              let row = rows.first else { return nil }
+        return await enrichWithUsernames(parseChallenge(row, challengerUsername: nil, opponentUsername: nil))
     }
 
     private func parseChallenge(

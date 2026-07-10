@@ -124,7 +124,10 @@ final class AppState: ObservableObject {
             return
         }
         do {
-            onlineMatchToStart = try await challengeService.acceptChallenge(invite)
+            let config = try await challengeService.acceptChallenge(invite)
+            challengeService.markMatchStarted(config.matchId)
+            onlineMatchToStart = config
+            challengeService.clearAcceptedOutgoing()
             if !entitlements.isPremium {
                 _ = lives.consumeLife(isFriendGame: true)
             }
@@ -148,15 +151,24 @@ final class AppState: ObservableObject {
               let session else { return }
 
         if invite.status == "accepted",
+           let matchId = invite.matchId,
+           !challengeService.hasStartedMatch(matchId),
            let config = challengeService.onlineConfig(for: invite, myUserId: session.userId) {
             isWaitingForChallengeAccept = false
+            challengeService.markMatchStarted(matchId)
             onlineMatchToStart = config
-            challengeService.clearRejectedOutgoing()
+            challengeService.clearAcceptedOutgoing()
         } else if invite.status == "rejected" {
             isWaitingForChallengeAccept = false
             challengeStatusMessage = "\(invite.opponentUsername) declined your challenge."
             challengeService.clearRejectedOutgoing()
         }
+    }
+
+    func finishOnlineMatch() {
+        onlineMatchToStart = nil
+        isWaitingForChallengeAccept = false
+        pendingInviteChallenge = nil
     }
 
     /// Restores a saved Supabase session when opened within the last 7 days.

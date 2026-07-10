@@ -80,6 +80,31 @@ struct RackView: View {
     }
 }
 
+/// Computes rack tile size from available space — landscape uses the wider axis for bigger letters.
+enum RackLayout {
+    static func tileSize(
+        letterCount: Int,
+        in size: CGSize,
+        minSize: CGFloat = 30,
+        maxSize: CGFloat = 58
+    ) -> CGFloat {
+        let isLandscape = size.width > size.height
+        let spacing: CGFloat = 5
+        let horizontalPadding: CGFloat = 32
+        let availableWidth = size.width - horizontalPadding
+        let widthFit = (availableWidth - spacing * CGFloat(max(letterCount - 1, 0)))
+            / CGFloat(max(letterCount, 1))
+
+        if isLandscape {
+            let heightCap = size.height * 0.38
+            return min(maxSize, max(minSize, min(widthFit, heightCap)))
+        }
+
+        // Portrait: scale tiles to fit every letter on one row.
+        return min(maxSize, max(minSize, widthFit))
+    }
+}
+
 struct PrimaryButtonStyle: ButtonStyle {
     var color: Color = Theme.accent
 

@@ -29,6 +29,10 @@ struct HomeView: View {
             .fullScreenCover(item: $app.onlineMatchToStart) { config in
                 MatchView(onlineMatch: config, challengeService: app.challengeService)
                     .environmentObject(app)
+                    .onDisappear {
+                        app.finishOnlineMatch()
+                        challengingUsername = nil
+                    }
             }
             .fullScreenCover(isPresented: $showMatch) {
                 MatchView()

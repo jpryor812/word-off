@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Home-screen section listing the five daily puzzles (5–9 letter racks).
+/// Home-screen section listing the daily puzzles (5–10 letter racks).
 struct DailyHubView: View {
     @EnvironmentObject var app: AppState
     @Binding var showPaywall: Bool
@@ -170,12 +170,16 @@ struct DailyResultDetailView: View {
     @EnvironmentObject var app: AppState
     @Environment(\.dismiss) private var dismiss
     let result: DailyPuzzleResult
+    var showsDoneButton = false
+    var onDone: (() -> Void)?
 
     @State private var entries: [DailyLeaderboardEntry] = []
     @State private var isLoading = true
     @State private var showBestWords = false
     @State private var showTopWords = false
+    @State private var showPaywall = false
     @State private var perfectScore: Int?
+    @State private var standing: (rank: Int, total: Int)?
 
     var body: some View {
         NavigationStack {
@@ -184,15 +188,31 @@ struct DailyResultDetailView: View {
                 ScrollView {
                     VStack(spacing: 16) {
                         summaryCard
+                        shareButton
                         revealButton
                         wordsCard
                         leaderboardCard
+                        if showsDoneButton {
+                            Button("Done") {
+                                if let onDone {
+                                    onDone()
+                                } else {
+                                    dismiss()
+                                }
+                            }
+                                .font(.system(.subheadline, design: .rounded).weight(.bold))
+                                .foregroundColor(Theme.subtleText)
+                                .padding(.top, 4)
+                        }
                     }
                     .padding()
                 }
             }
             .sheet(isPresented: $showTopWords) {
                 DailyTopWordsView(result: result).environmentObject(app)
+            }
+            .sheet(isPresented: $showPaywall) {
+                PaywallView().environmentObject(app)
             }
             .navigationTitle("\(result.rackSize)-Letter Daily")
             .navigationBarTitleDisplayMode(.inline)
@@ -204,6 +224,10 @@ struct DailyResultDetailView: View {
         }
         .task {
             await loadLeaderboard()
+            standing = await app.dailyStore.fetchStanding(
+                day: result.date,
+                rackSize: result.rackSize,
+                score: result.totalScore)
             let day = result.date
             let size = result.rackSize
             perfectScore = await Task.detached(priority: .userInitiated) {
@@ -245,29 +269,26 @@ struct DailyResultDetailView: View {
         .panel()
     }
 
+    private var shareButton: some View {
+        ShareLink(item: result.shareText(perfectScore: perfectScore, standing: standing)) {
+            Label("Share Score", systemImage: "square.and.arrow.up")
+        }
+        .buttonStyle(PrimaryButtonStyle())
+    }
+
     @ViewBuilder
     private var revealButton: some View {
         let unlocked = result.topWordsUnlocked(isPremium: app.entitlements.isPremium)
-        if unlocked {
-            Button {
+        Button {
+            if unlocked {
                 showTopWords = true
-            } label: {
-                Label("Reveal Top Words", systemImage: "trophy.fill")
+            } else {
+                showPaywall = true
             }
-            .buttonStyle(PrimaryButtonStyle())
-        } else {
-            VStack(spacing: 4) {
-                Label("Top words unlock tomorrow", systemImage: "lock.fill")
-                    .font(.system(.subheadline, design: .rounded).weight(.bold))
-                    .foregroundColor(Theme.tileText)
-                Text("Go Premium to see the best possible words right now.")
-                    .font(.system(.caption, design: .rounded))
-                    .foregroundColor(Theme.tileText.opacity(0.6))
-                    .multilineTextAlignment(.center)
-            }
-            .frame(maxWidth: .infinity)
-            .panel()
+        } label: {
+            Label("Reveal Top Words", systemImage: unlocked ? "trophy.fill" : "lock.fill")
         }
+        .buttonStyle(PrimaryButtonStyle(color: unlocked ? Theme.accent : Theme.backgroundLight))
     }
 
     private var wordsCard: some View {
@@ -376,8 +397,10 @@ struct DailyPlayView: View {
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var engine: DailyEngine
     @FocusState private var inputFocused: Bool
-    @State private var standing: (rank: Int, total: Int)?
-    @State private var perfectScore: Int?
+    @State private var completedResult: DailyPuzzleResult?
+    @State private var badgeSnapshot: [BadgeTrackItem] = []
+    @State private var badgeDeltas: [BadgeProgressDelta] = []
+    @State private var showBadgeCelebration = false
 
     init(rackSize: Int) {
         _engine = StateObject(wrappedValue: DailyEngine(rackSize: rackSize))
@@ -386,14 +409,41 @@ struct DailyPlayView: View {
     var body: some View {
         ZStack {
             Theme.background.ignoresSafeArea()
-            switch engine.phase {
-            case .intro, .flipping, .go, .playing, .rackDone:
-                playArea
-            case .finished:
-                finishedView
+            if showBadgeCelebration {
+                BadgeProgressCelebrationView(deltas: badgeDeltas) {
+                    dismiss()
+                }
+            } else {
+                switch engine.phase {
+                case .intro, .flipping, .go, .playing, .rackDone:
+                    GeometryReader { geo in
+                        playArea(in: geo.size)
+                    }
+                case .finished:
+                    if let completedResult {
+                        DailyResultDetailView(
+                            result: completedResult,
+                            showsDoneButton: true,
+                            onDone: {
+                                if badgeDeltas.isEmpty {
+                                    dismiss()
+                                } else {
+                                    showBadgeCelebration = true
+                                }
+                            })
+                            .environmentObject(app)
+                    }
+                }
             }
         }
-        .onAppear { engine.start() }
+        .onAppear {
+            badgeSnapshot = app.badgeStore.currentTracks(
+                loginStreak: app.lives.loginStreak,
+                dailyStreak: app.lives.dailyCompletionStreak,
+                todayWins: app.statsStore.todayRecord.wins,
+                winStreak: app.statsStore.winStreak)
+            engine.start()
+        }
         .onDisappear { engine.cancel() }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase != .active { engine.playerLeftApp() }
@@ -404,8 +454,10 @@ struct DailyPlayView: View {
         }
     }
 
-    private var playArea: some View {
-        VStack(spacing: 16) {
+    private func playArea(in size: CGSize) -> some View {
+        let tileSize = RackLayout.tileSize(letterCount: engine.rack.count, in: size)
+
+        return VStack(spacing: 16) {
             HStack {
                 Text("\(engine.rackSize)-LETTER DAILY")
                     .font(.system(.headline, design: .rounded).weight(.black))
@@ -452,7 +504,7 @@ struct DailyPlayView: View {
                 rackInterstitial
             } else {
                 RackView(rack: engine.rack, flipped: engine.phase != .flipping,
-                         tileSize: rackTileSize, wrapRows: engine.rackSize >= 10 ? 2 : 1)
+                         tileSize: tileSize, wrapRows: 1)
                     .animation(.spring(duration: 0.5), value: engine.rack)
                     .animation(.spring(duration: 0.5), value: engine.phase)
             }
@@ -476,16 +528,6 @@ struct DailyPlayView: View {
             inputBar
         }
         .padding()
-    }
-
-    /// Larger racks (10–12) wrap onto two rows, so tiles can stay big.
-    private var rackTileSize: CGFloat {
-        switch engine.rackSize {
-        case 10, 11, 12: return 40
-        case 9: return 32
-        case 8: return 36
-        default: return 44
-        }
     }
 
     private var timer: some View {
@@ -543,116 +585,19 @@ struct DailyPlayView: View {
         }
     }
 
-    // MARK: - Finished
-
-    private var finishedView: some View {
-        ScrollView {
-            VStack(spacing: 18) {
-                Text("DAILY COMPLETE!")
-                    .font(.system(size: 32, weight: .black, design: .rounded))
-                    .foregroundColor(Theme.accent)
-                    .padding(.top, 40)
-
-                Text("\(engine.totalScore) points")
-                    .font(.system(size: 44, weight: .black, design: .rounded))
-                    .foregroundColor(.white)
-
-                if let perfectScore {
-                    perfectScoreBanner(yours: engine.totalScore, perfect: perfectScore)
-                }
-
-                if let standing {
-                    let percentile = max(1, 100 - Int((Double(standing.rank) / Double(standing.total)) * 100))
-                    Text("\(standing.rank)/\(standing.total) · \(percentile)th percentile!")
-                        .font(.system(.headline, design: .rounded))
-                        .foregroundColor(Theme.subtleText)
-                } else if !SupabaseConfig.isConfigured {
-                    Text("Connect online to see global rankings")
-                        .font(.system(.caption, design: .rounded))
-                        .foregroundColor(Theme.subtleText)
-                }
-
-                VStack(spacing: 8) {
-                    ForEach(Array(engine.roundScores.enumerated()), id: \.offset) { index, score in
-                        HStack {
-                            Text("Rack \(index + 1)")
-                                .font(.system(.subheadline, design: .rounded).weight(.bold))
-                                .foregroundColor(Theme.tileText.opacity(0.6))
-                            Text(engine.words[index] ?? "—")
-                                .font(.system(.subheadline, design: .rounded).weight(.bold))
-                                .foregroundColor(Theme.tileText)
-                            Spacer()
-                            Text("\(score)")
-                                .font(.system(.title3, design: .rounded).weight(.black))
-                                .foregroundColor(score > 0 ? Theme.tileText : Theme.lose)
-                        }
-                    }
-                }
-                .panel()
-
-                ShareLink(item: shareText) {
-                    Label("Share Score", systemImage: "square.and.arrow.up")
-                }
-                .buttonStyle(PrimaryButtonStyle())
-
-                Button("Done") { dismiss() }
-                    .foregroundColor(Theme.subtleText)
-                    .padding(.bottom, 30)
-            }
-            .padding()
-        }
-        .background(Theme.background)
-    }
-
-    private func perfectScoreBanner(yours: Int, perfect: Int) -> some View {
-        let pct = perfect > 0 ? Int((Double(yours) / Double(perfect)) * 100) : 0
-        return VStack(spacing: 4) {
-            Text("You: \(yours) · Best possible: \(perfect)")
-                .font(.system(.headline, design: .rounded).weight(.bold))
-                .foregroundColor(.white)
-            Text(pct >= 100 ? "Perfect run!" : "\(pct)% of the best common-word score")
-                .font(.system(.caption, design: .rounded).weight(.bold))
-                .foregroundColor(pct >= 100 ? Theme.win : Theme.subtleText)
-        }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 16)
-        .background(RoundedRectangle(cornerRadius: 14).fill(Theme.backgroundLight.opacity(0.55)))
-    }
-
-    private var shareText: String {
-        var lines = ["Worded \(engine.rackSize)-Letter Daily — \(engine.totalScore) pts"]
-        for (index, score) in engine.roundScores.enumerated() {
-            let length = engine.words[index]?.replacingOccurrences(of: " ✕", with: "").count ?? 0
-            let blurred = length > 0 ? String(repeating: "▮", count: length) : "—"
-            lines.append("Rack \(index + 1): \(blurred) \(score) pts")
-        }
-        if let perfectScore {
-            lines.append("Best possible: \(perfectScore) pts")
-        }
-        if let standing {
-            let percentile = max(1, 100 - Int((Double(standing.rank) / Double(standing.total)) * 100))
-            lines.append("\(standing.rank)/\(standing.total) · \(percentile)th percentile")
-        }
-        lines.append("Play today's puzzle: worded.app")
-        return lines.joined(separator: "\n")
-    }
-
     private func finishPuzzle() {
         let result = engine.makeResult()
+        completedResult = result
         app.dailyStore.save(result)
         app.lives.recordDailyCompletion(day: engine.day)
         app.statsStore.recordDailyWords(scores: engine.roundScores)
         let day = engine.day
         let rackSize = engine.rackSize
-        let score = engine.totalScore
         let words = result.words
         let roundScores = result.roundScores
         Task {
-            standing = await app.dailyStore.fetchStanding(day: day, rackSize: rackSize, score: score)
-            let perfect = await Task.detached(priority: .userInitiated) {
-                DailySolver.perfectScore(day: day, rackSize: rackSize)
-            }.value
-            perfectScore = perfect
+            let standing = await app.dailyStore.fetchStanding(
+                day: day, rackSize: rackSize, score: result.totalScore)
             app.badgeStore.recordDailyCompletion(
                 day: day,
                 rackSize: rackSize,
@@ -664,6 +609,13 @@ struct DailyPlayView: View {
             app.badgeStore.refreshStreakBadges(
                 loginStreak: app.lives.loginStreak,
                 dailyStreak: app.lives.dailyCompletionStreak)
+            badgeDeltas = BadgeCatalog.progressDeltas(
+                before: badgeSnapshot,
+                after: app.badgeStore.currentTracks(
+                    loginStreak: app.lives.loginStreak,
+                    dailyStreak: app.lives.dailyCompletionStreak,
+                    todayWins: app.statsStore.todayRecord.wins,
+                    winStreak: app.statsStore.winStreak))
         }
     }
 }

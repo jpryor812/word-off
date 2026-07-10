@@ -189,7 +189,7 @@ struct PaywallView: View {
     private func redeemPromo() {
         if app.entitlements.redeemPromo(code: promoCode) {
             promoSucceeded = true
-            promoMessage = "Premium unlocked — enjoy!"
+            promoMessage = "24 hours of Premium unlocked — enjoy!"
             promoCode = ""
         } else {
             promoSucceeded = false
