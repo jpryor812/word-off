@@ -90,9 +90,14 @@ final class MatchChallengeService: ObservableObject {
         }
         guard opponent.id != session.userId else { throw MatchChallengeError.cannotChallengeSelf }
 
-        if try await hasPendingBetween(challengerId: session.userId, opponentId: opponent.id) {
+        // If they already challenged us, don't stack a reverse challenge on top.
+        if try await hasPending(challengerId: opponent.id, opponentId: session.userId) {
             throw MatchChallengeError.alreadyPending
         }
+
+        // Cancel any of our own stale pending challenges to this player so
+        // re-sending always works (old ones otherwise block forever).
+        await cancelPending(challengerId: session.userId, opponentId: opponent.id)
 
         let seed = UUID().uuidString
         let payload: [String: Any] = [
@@ -283,11 +288,23 @@ final class MatchChallengeService: ObservableObject {
         return try JSONDecoder().decode([ProfileLookup].self, from: data).first
     }
 
-    private func hasPendingBetween(challengerId: String, opponentId: String) async throws -> Bool {
-        let q = "status=eq.pending&or=(and(challenger_id.eq.\(challengerId),opponent_id.eq.\(opponentId)),and(challenger_id.eq.\(opponentId),opponent_id.eq.\(challengerId)))&select=id"
+    private func hasPending(challengerId: String, opponentId: String) async throws -> Bool {
+        let q = "status=eq.pending&challenger_id=eq.\(challengerId)&opponent_id=eq.\(opponentId)&select=id"
         let data = try await SupabaseClient.shared.request(table: "match_challenges", query: q)
         guard let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return false }
         return !rows.isEmpty
+    }
+
+    private func cancelPending(challengerId: String, opponentId: String) async {
+        guard let body = try? JSONSerialization.data(withJSONObject: [
+            "status": "cancelled",
+            "updated_at": ISO8601DateFormatter().string(from: Date()),
+        ]) else { return }
+        _ = try? await SupabaseClient.shared.request(
+            table: "match_challenges",
+            method: "PATCH",
+            query: "challenger_id=eq.\(challengerId)&opponent_id=eq.\(opponentId)&status=eq.pending",
+            body: body)
     }
 
     private func fetchChallenge(id: String) async throws -> MatchChallengeInvite? {

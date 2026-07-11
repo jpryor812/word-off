@@ -202,6 +202,34 @@ final class SupabaseClient {
         body: Data? = nil,
         prefer: String? = nil
     ) async throws -> Data {
+        let (data, code) = try await performRequest(
+            table: table, method: method, query: query, body: body, prefer: prefer)
+
+        // Access tokens expire ~hourly; refresh once and retry so background
+        // polling (challenge invites, submissions) doesn't silently die.
+        if code == 401, currentSession != nil {
+            try await refreshSessionDeduped()
+            let (retryData, retryCode) = try await performRequest(
+                table: table, method: method, query: query, body: body, prefer: prefer)
+            guard (200..<300).contains(retryCode) else {
+                throw SupabaseError.http(retryCode, String(data: retryData, encoding: .utf8) ?? "")
+            }
+            return retryData
+        }
+
+        guard (200..<300).contains(code) else {
+            throw SupabaseError.http(code, String(data: data, encoding: .utf8) ?? "")
+        }
+        return data
+    }
+
+    private func performRequest(
+        table: String,
+        method: String,
+        query: String,
+        body: Data?,
+        prefer: String?
+    ) async throws -> (Data, Int) {
         guard SupabaseConfig.isConfigured else { throw SupabaseError.notConfigured }
         let urlString = "\(SupabaseConfig.url)/rest/v1/\(table)\(query.isEmpty ? "" : "?\(query)")"
         var request = URLRequest(url: URL(string: urlString)!)
@@ -215,9 +243,22 @@ final class SupabaseClient {
         request.httpBody = body
         let (data, response) = try await session.data(for: request)
         let code = (response as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(code) else {
-            throw SupabaseError.http(code, String(data: data, encoding: .utf8) ?? "")
+        return (data, code)
+    }
+
+    /// Serializes concurrent 401 retries into a single token refresh.
+    private var refreshTask: Task<Session, Error>?
+
+    private func refreshSessionDeduped() async throws {
+        if let existing = refreshTask {
+            _ = try await existing.value
+            return
         }
-        return data
+        let task = Task { [self] in
+            defer { refreshTask = nil }
+            return try await refreshSession()
+        }
+        refreshTask = task
+        _ = try await task.value
     }
 }
