@@ -158,10 +158,12 @@ struct DailyLeaderboardEntry: Identifiable {
 
 /// Identifies today's puzzle deterministically for every player.
 enum DailySeed {
+    /// The puzzle "day" resets at local midnight so the daily rolls over at
+    /// 12:00 AM in the player's own time zone (e.g. Eastern), not UTC.
     static func todayString(_ date: Date = Date()) -> String {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
-        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.timeZone = TimeZone.current
         return formatter.string(from: date)
     }
 

@@ -223,6 +223,9 @@ struct DailyResultDetailView: View {
             }
         }
         .task {
+            // Push the just-completed score up first so the server (and the
+            // rank query below) reflect it right away.
+            await app.dailyStore.syncResult(result)
             await loadLeaderboard()
             standing = await app.dailyStore.fetchStanding(
                 day: result.date,
@@ -385,7 +388,18 @@ struct DailyResultDetailView: View {
     }
 
     private func loadLeaderboard() async {
-        entries = await app.dailyStore.fetchLeaderboard(day: result.date, rackSize: result.rackSize)
+        var fetched = await app.dailyStore.fetchLeaderboard(day: result.date, rackSize: result.rackSize)
+        // Guarantee the player sees their own score immediately, even if the
+        // server upload hasn't propagated to the leaderboard query yet.
+        if !app.username.isEmpty {
+            fetched.removeAll { $0.username.caseInsensitiveCompare(app.username) == .orderedSame }
+            fetched.append(DailyLeaderboardEntry(
+                username: app.username,
+                score: result.totalScore,
+                bestWord: result.bestWord?.word,
+                bestWordScore: result.bestWord?.score))
+        }
+        entries = fetched.sorted { $0.score > $1.score }
         isLoading = false
     }
 }
@@ -401,6 +415,7 @@ struct DailyPlayView: View {
     @State private var badgeSnapshot: [BadgeTrackItem] = []
     @State private var badgeDeltas: [BadgeProgressDelta] = []
     @State private var showBadgeCelebration = false
+    @State private var showExitConfirm = false
 
     init(rackSize: Int) {
         _engine = StateObject(wrappedValue: DailyEngine(rackSize: rackSize))
@@ -452,13 +467,26 @@ struct DailyPlayView: View {
             if newPhase == .playing { inputFocused = true }
             if newPhase == .finished { finishPuzzle() }
         }
+        .alert("Leave daily challenge?", isPresented: $showExitConfirm) {
+            Button("Leave", role: .destructive) { exitDaily() }
+            Button("Keep Playing", role: .cancel) {}
+        } message: {
+            Text("Your current score will be locked in and any racks you haven't played will score zero.")
+        }
+    }
+
+    private func exitDaily() {
+        engine.exitEarly()
+        finishPuzzle()
+        dismiss()
     }
 
     private func playArea(in size: CGSize) -> some View {
         let tileSize = RackLayout.tileSize(letterCount: engine.rack.count, in: size)
 
         return VStack(spacing: 16) {
-            HStack {
+            HStack(spacing: 10) {
+                ExitGameButton { showExitConfirm = true }
                 Text("\(engine.rackSize)-LETTER DAILY")
                     .font(.system(.headline, design: .rounded).weight(.black))
                     .foregroundColor(.white)

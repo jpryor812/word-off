@@ -171,7 +171,10 @@ final class MatchEngine: ObservableObject {
                 let remaining = max(0, GameConstants.roundSeconds - Int(elapsed))
                 if remaining != secondsLeft {
                     secondsLeft = remaining
-                    if remaining <= 5 && remaining > 0 { SoundPlayer.shared.play(.tick) }
+                    if remaining <= 5 && remaining > 0 {
+                        SoundPlayer.shared.play(.tick)
+                        haptics.impact()
+                    }
                 }
                 if !opponentHasSubmitted && elapsed >= opponentPlan.submitAt && opponentPlan.word != nil {
                     opponentHasSubmitted = true
@@ -436,6 +439,18 @@ final class MatchEngine: ObservableObject {
             try? await Task.sleep(for: .seconds(Double.random(in: 1.0...3.0)))
             beginRound()
         }
+    }
+
+    /// Player chose to leave mid-match. Cements the current round standings into
+    /// a final result (leader wins, else a tie) and records it.
+    func exitEarly() {
+        guard phase != .matchOver else { return }
+        timerTask?.cancel()
+        let outcome: MatchOutcome
+        if playerRoundWins > opponentRoundWins { outcome = .playerWins }
+        else if opponentRoundWins > playerRoundWins { outcome = .opponentWins }
+        else { outcome = .tie }
+        finishMatch(outcome)
     }
 
     func cancel() {

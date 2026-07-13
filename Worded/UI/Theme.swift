@@ -17,6 +17,22 @@ enum Theme {
     static let subtleText = Color.white.opacity(0.7)
 }
 
+/// Small circular "X" button used to leave a game in progress (top-left corner).
+struct ExitGameButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "xmark")
+                .font(.system(size: 15, weight: .black))
+                .foregroundColor(.white)
+                .frame(width: 34, height: 34)
+                .background(Circle().fill(Theme.backgroundLight))
+        }
+        .accessibilityLabel("Exit game")
+    }
+}
+
 struct TileView: View {
     let letter: Character
     var size: CGFloat = 44

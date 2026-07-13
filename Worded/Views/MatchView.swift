@@ -13,6 +13,7 @@ struct MatchView: View {
     @State private var badgeSnapshot: [BadgeTrackItem] = []
     @State private var badgeDeltas: [BadgeProgressDelta] = []
     @State private var showBadgeCelebration = false
+    @State private var showExitConfirm = false
 
     init(onlineMatch: OnlineMatchConfig? = nil, challengeService: MatchChallengeService? = nil) {
         _engine = StateObject(wrappedValue: MatchEngine(
@@ -94,6 +95,18 @@ struct MatchView: View {
         } message: {
             Text("No lives left for a rematch today. Come back tomorrow or go Premium for unlimited games.")
         }
+        .alert("Leave match?", isPresented: $showExitConfirm) {
+            Button("Leave", role: .destructive) { exitMatch() }
+            Button("Keep Playing", role: .cancel) {}
+        } message: {
+            Text("The match will end with the current score locked in.")
+        }
+    }
+
+    private func exitMatch() {
+        engine.exitEarly()
+        app.finishOnlineMatch()
+        dismiss()
     }
 
     // MARK: - Searching
@@ -200,7 +213,8 @@ struct MatchView: View {
     }
 
     private var scoreHeader: some View {
-        HStack {
+        HStack(spacing: 8) {
+            ExitGameButton { showExitConfirm = true }
             scorePill(name: app.username, wins: engine.playerRoundWins, highlight: true)
             Spacer()
             Text("Rd \(engine.roundNumber)/7")
@@ -221,7 +235,7 @@ struct MatchView: View {
                 .font(.system(.title2, design: .rounded).weight(.black))
                 .foregroundColor(.white)
         }
-        .frame(width: 110)
+        .frame(width: 96)
         .padding(.vertical, 6)
         .background(RoundedRectangle(cornerRadius: 12).fill(Theme.backgroundLight))
     }
@@ -580,7 +594,15 @@ struct RoundRevealCard: View {
     }
 
     private func submissionRow(name: String, submission: PlayerSubmission, isWinner: Bool, isFaster: Bool) -> some View {
-        HStack {
+        // Long, high-scoring words with a speed bonus make the "5 + 1 = 6"
+        // readout wrap awkwardly beside the tiles, so for 7–8 letter words
+        // worth 10+ points we stack the score underneath the tiles instead.
+        let wordLength = submission.word?.count ?? 0
+        let scoreBelowLetters = submission.isValid
+            && submission.score >= 10
+            && (wordLength == 7 || wordLength == 8)
+
+        return HStack(alignment: .center) {
             VStack(alignment: .leading, spacing: 4) {
                 Text(name)
                     .font(.system(.caption, design: .rounded).weight(.bold))
@@ -603,9 +625,14 @@ struct RoundRevealCard: View {
                 if submission.isValid, let seconds = submission.submittedAt {
                     speedPill(seconds: seconds, isFaster: isFaster)
                 }
+                if scoreBelowLetters {
+                    scoreDisplay(submission: submission, isWinner: isWinner)
+                }
             }
             Spacer()
-            scoreDisplay(submission: submission, isWinner: isWinner)
+            if !scoreBelowLetters {
+                scoreDisplay(submission: submission, isWinner: isWinner)
+            }
         }
         .overlay(alignment: .topTrailing) {
             if isWinner {

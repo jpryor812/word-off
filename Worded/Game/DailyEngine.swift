@@ -79,7 +79,10 @@ final class DailyEngine: ObservableObject {
                 let remaining = max(0, roundDuration - Int(elapsed))
                 if remaining != secondsLeft {
                     secondsLeft = remaining
-                    if remaining <= 5 && remaining > 0 { SoundPlayer.shared.play(.tick) }
+                    if remaining <= 5 && remaining > 0 {
+                        SoundPlayer.shared.play(.tick)
+                        haptics.impact()
+                    }
                 }
                 if elapsed >= Double(roundDuration) {
                     endRack()
@@ -138,6 +141,22 @@ final class DailyEngine: ObservableObject {
 
     private func endRack() {
         timerTask?.cancel()
+        scoreCurrentRack()
+
+        if rackIndex + 1 >= GameConstants.dailyRoundsPerPuzzle {
+            phase = .finished
+        } else {
+            phase = .rackDone
+            Task {
+                try? await Task.sleep(for: .seconds(2.2))
+                rackIndex += 1
+                beginRack()
+            }
+        }
+    }
+
+    /// Scores whatever the player has for the current rack and appends it.
+    private func scoreCurrentRack() {
         var word = lockedWord
         if word == nil, !satOut {
             let typed = typedWord.trimmingCharacters(in: .whitespaces).uppercased()
@@ -155,16 +174,16 @@ final class DailyEngine: ObservableObject {
         roundScores.append(score)
         words.append(word)
         SoundPlayer.shared.play(score > 0 ? .win : .lose)
+    }
 
-        if rackIndex + 1 >= GameConstants.dailyRoundsPerPuzzle {
-            phase = .finished
-        } else {
-            phase = .rackDone
-            Task {
-                try? await Task.sleep(for: .seconds(2.2))
-                rackIndex += 1
-                beginRack()
-            }
+    /// Player chose to leave mid-puzzle. Locks in the current rack's score and
+    /// fills any remaining racks with zero so the result still saves and counts.
+    func exitEarly() {
+        timerTask?.cancel()
+        if phase == .playing { scoreCurrentRack() }
+        while roundScores.count < GameConstants.dailyRoundsPerPuzzle {
+            roundScores.append(0)
+            words.append(nil)
         }
     }
 

@@ -47,11 +47,11 @@ final class LivesManager: ObservableObject {
         refreshDailyStreakIfStale()
     }
 
-    /// Consecutive UTC days with at least one daily puzzle completed.
+    /// Consecutive local-time days with at least one daily puzzle completed.
     var dailyCompletionStreak: Int { dailyStreakDays }
 
     /// Call when a daily puzzle is finished. Extends the streak on the first
-    /// completion of each UTC day.
+    /// completion of each local-time day.
     func recordDailyCompletion(day: String) {
         if lastDailyCompletionDay == day {
             refreshToken += 1

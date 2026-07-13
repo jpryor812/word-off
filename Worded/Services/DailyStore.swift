@@ -23,9 +23,12 @@ final class DailyStore: ObservableObject {
         try? FileManager.default.removeItem(at: fileURL)
     }
 
-    /// One-time wipe of daily progress after scoring + rack rule changes.
+    /// One-time wipe of daily progress. Bumped when we need every tester to get
+    /// a clean slate — here, after moving the daily rollover to local midnight
+    /// (was UTC), so puzzles played during the old early-rollover window no
+    /// longer show as already completed.
     private static func performOneTimeResetIfNeeded() {
-        let flag = "worded.daily.oneTimeReset.20260704"
+        let flag = "worded.daily.oneTimeReset.20260712"
         guard !UserDefaults.standard.bool(forKey: flag) else { return }
         UserDefaults.standard.set(true, forKey: flag)
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -66,6 +69,12 @@ final class DailyStore: ObservableObject {
         results.append(result)
         persist()
         Task { await sync(result) }
+    }
+
+    /// Awaitable upload — used by the results screen so the player's score is
+    /// on the server before we fetch the leaderboard / standing.
+    func syncResult(_ result: DailyPuzzleResult) async {
+        await sync(result)
     }
 
     /// Uploads the score for leaderboard ranking. Fails silently offline; the
