@@ -81,17 +81,24 @@ create policy "addressee accepts"
 -- =========================================================================
 create table if not exists public.matchmaking_queue (
   user_id uuid primary key references public.profiles (id) on delete cascade,
-  enqueued_at timestamptz not null default now()
+  enqueued_at timestamptz not null default now(),
+  status text not null default 'waiting'
+    check (status in ('waiting', 'matched', 'cancelled')),
+  match_id uuid references public.matches (id) on delete set null
 );
 
 alter table public.matchmaking_queue enable row level security;
 
-create policy "queue readable by authed users"
-  on public.matchmaking_queue for select using (auth.role() = 'authenticated');
+create policy "users read own queue entry"
+  on public.matchmaking_queue for select using (auth.uid() = user_id);
 
 create policy "users manage own queue entry"
   on public.matchmaking_queue for all
   using (auth.uid() = user_id) with check (auth.uid() = user_id);
+
+create index if not exists matchmaking_queue_waiting_fifo
+  on public.matchmaking_queue (enqueued_at asc)
+  where status = 'waiting';
 
 create table if not exists public.matches (
   id uuid primary key default gen_random_uuid(),

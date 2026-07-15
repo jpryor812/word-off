@@ -2,7 +2,7 @@ import Foundation
 import StoreKit
 
 /// StoreKit 2 wrapper for the two products:
-/// - `com.worded.premium.monthly` ($4.99/mo): all dailies, unlimited PvP, no ads
+/// - `com.worded.premium.monthly` ($4.99/mo): Top Words reveals, unlimited PvP, no ads
 /// - `com.worded.dailypass` ($0.99 consumable): same benefits until local midnight
 @MainActor
 final class EntitlementsManager: ObservableObject {

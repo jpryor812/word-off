@@ -223,6 +223,41 @@ final class SupabaseClient {
         return data
     }
 
+    /// Calls a Postgres RPC via PostgREST (`POST /rest/v1/rpc/{name}`).
+    func rpc(_ name: String, params: [String: Any] = [:]) async throws -> Data {
+        let body = try JSONSerialization.data(withJSONObject: params)
+        let (data, code) = try await performRPC(name: name, body: body)
+
+        if code == 401, currentSession != nil {
+            try await refreshSessionDeduped()
+            let (retryData, retryCode) = try await performRPC(name: name, body: body)
+            guard (200..<300).contains(retryCode) else {
+                throw SupabaseError.http(retryCode, String(data: retryData, encoding: .utf8) ?? "")
+            }
+            return retryData
+        }
+
+        guard (200..<300).contains(code) else {
+            throw SupabaseError.http(code, String(data: data, encoding: .utf8) ?? "")
+        }
+        return data
+    }
+
+    private func performRPC(name: String, body: Data) async throws -> (Data, Int) {
+        guard SupabaseConfig.isConfigured else { throw SupabaseError.notConfigured }
+        var request = URLRequest(url: URL(string: "\(SupabaseConfig.url)/rest/v1/rpc/\(name)")!)
+        request.httpMethod = "POST"
+        request.setValue(SupabaseConfig.anonKey, forHTTPHeaderField: "apikey")
+        if let token = currentSession?.accessToken {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        let (data, response) = try await session.data(for: request)
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        return (data, code)
+    }
+
     private func performRequest(
         table: String,
         method: String,

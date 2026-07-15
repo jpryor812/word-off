@@ -9,7 +9,7 @@ import SwiftUI
 /// - Streak break resets bonus lives to 0.
 /// - First friend game each day is free (doesn't consume a life).
 /// - Premium / daily pass: unlimited PvP, no life tracking.
-/// - Daily puzzles never consume lives; free users pick 3 of the daily sizes.
+/// - Daily puzzles never consume lives; all sizes are free to play.
 @MainActor
 final class LivesManager: ObservableObject {
     @AppStorage("worded.lives.day") private var currentDay = ""
@@ -147,23 +147,14 @@ final class LivesManager: ObservableObject {
         return true
     }
 
-    // MARK: - Daily puzzle picks (free users choose 3 of 5)
+    // MARK: - Daily puzzle access
 
     var unlockedDailySizes: [Int] {
         rollDayIfNeeded()
         return unlockedDailySizesRaw.split(separator: ",").compactMap { Int($0) }
     }
 
-    /// Free users lock in a size when they start it, up to 3 per day.
     func unlockDailySize(_ size: Int, isPremium: Bool) -> Bool {
-        rollDayIfNeeded()
-        if isPremium { return true }
-        var sizes = unlockedDailySizes
-        if sizes.contains(size) { return true }
-        guard sizes.count < GameConstants.freeDailyPuzzlesPerDay else { return false }
-        sizes.append(size)
-        unlockedDailySizesRaw = sizes.map(String.init).joined(separator: ",")
-        refreshToken += 1
-        return true
+        true
     }
 }

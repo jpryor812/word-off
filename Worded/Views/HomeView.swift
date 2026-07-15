@@ -9,22 +9,49 @@ struct HomeView: View {
     @State private var outOfLivesAlert = false
     @State private var challengeError: String?
     @State private var challengingUsername: String?
+    @State private var aiAfterMatchmakingTimeout = false
 
     var body: some View {
         NavigationStack {
             ZStack {
                 Theme.background.ignoresSafeArea()
-                ScrollView {
-                    VStack(spacing: 20) {
-                        header
-                        livesBar
-                        playCard
-                        DailyHubView(showPaywall: $showPaywall)
-                        statsCard
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 20) {
+                            header
+                                .homeOnboardingSection(app.onboardingStore, section: .header, focusRing: false)
+                            livesBar
+                                .id("onboarding.lives")
+                                .homeOnboardingSection(app.onboardingStore, section: .lives)
+                            playCard
+                                .id("onboarding.playOnline")
+                                .homeOnboardingSection(app.onboardingStore, section: .quickMatch)
+                            DailyHubView(showPaywall: $showPaywall)
+                                .id("onboarding.dailies")
+                                .homeOnboardingSection(
+                                    app.onboardingStore,
+                                    section: .dailyHub,
+                                    focusRing: app.onboardingStore.step != .startFiveLetterDaily)
+                            statsCard
+                                .homeOnboardingSection(app.onboardingStore, section: .stats, focusRing: false)
+                        }
+                        .padding(16)
                     }
-                    .padding(16)
+                    .onChange(of: app.onboardingStore.step) { _, _ in
+                        guard app.onboardingStore.isActive,
+                              app.onboardingStore.scrollTargetID != nil else { return }
+                        OnboardingScroll.scrollToStep(
+                            store: app.onboardingStore,
+                            proxy: proxy)
+                    }
                 }
             }
+            .coordinateSpace(name: HomeOnboardingCoordinateSpace.name)
+            .homeOnboardingSpotlight(
+                store: app.onboardingStore,
+                isPremium: app.entitlements.isPremium,
+                onNext: { app.onboardingStore.advance() },
+                onSkip: { app.onboardingStore.skip() })
             .navigationBarHidden(true)
             .fullScreenCover(item: $app.onlineMatchToStart) { config in
                 MatchView(onlineMatch: config, challengeService: app.challengeService)
@@ -35,7 +62,7 @@ struct HomeView: View {
                     }
             }
             .fullScreenCover(isPresented: $showMatch) {
-                MatchView()
+                MatchView(aiAfterMatchmakingTimeout: aiAfterMatchmakingTimeout)
                     .environmentObject(app)
             }
             .sheet(isPresented: $showFriendSheet) {
@@ -50,12 +77,17 @@ struct HomeView: View {
             }
             .onChange(of: app.pendingChallengeUsername) { _, name in
                 guard let name, !name.isEmpty else { return }
+                guard !app.onboardingStore.isActive else { return }
                 challengingUsername = name
                 showFriendSheet = true
                 app.pendingChallengeUsername = nil
             }
             .overlay {
-                if app.isWaitingForChallengeAccept, let name = challengingUsername {
+                if app.isMatchmaking {
+                    MatchmakingSearchingOverlay(onCancel: {
+                        app.cancelQuickMatchSearch()
+                    })
+                } else if app.isWaitingForChallengeAccept, let name = challengingUsername {
                     ChallengeWaitingOverlay(
                         opponentName: name,
                         invite: app.pendingInviteChallenge,
@@ -73,6 +105,7 @@ struct HomeView: View {
                 StatsView().environmentObject(app)
             }
             .onAppear {
+                app.onboardingStore.startIfNeeded()
                 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("-demo-match") {
                     showMatch = true
@@ -91,7 +124,7 @@ struct HomeView: View {
             .alert(
                 "Game Challenge",
                 isPresented: Binding(
-                    get: { app.challengeService.incomingChallenge != nil },
+                    get: { app.challengeService.incomingChallenge != nil && !app.onboardingStore.isActive },
                     set: { _ in }
                 ),
                 presenting: app.challengeService.incomingChallenge
@@ -114,7 +147,7 @@ struct HomeView: View {
         }
     }
 
-    private func sendChallenge(to username: String) async {
+    private func sendChallenge(to username: String, fromOnboarding: Bool = false) async {
         challengeError = nil
         let canPlay = app.entitlements.isPremium
             || app.lives.livesRemaining > 0
@@ -130,6 +163,9 @@ struct HomeView: View {
                 _ = app.lives.consumeLife(isFriendGame: true)
             }
             showFriendSheet = false
+            if fromOnboarding {
+                app.onboardingStore.complete()
+            }
         } catch {
             challengeError = error.localizedDescription
         }
@@ -183,6 +219,7 @@ struct HomeView: View {
             loginStreakTracker
         }
         .panel()
+        .onboardingAnchor(.livesCard)
     }
 
     private var loginStreakTracker: some View {
@@ -264,8 +301,11 @@ struct HomeView: View {
                 Label("Play Online", systemImage: "bolt.fill")
             }
             .buttonStyle(PrimaryButtonStyle())
+            .onboardingAnchor(.playOnline)
+            .disabled(app.onboardingStore.isActive && app.onboardingStore.step != .quickMatch)
 
             Button {
+                guard !app.onboardingStore.isActive else { return }
                 showFriendSheet = true
             } label: {
                 Label(
@@ -275,8 +315,11 @@ struct HomeView: View {
                     systemImage: "person.2.fill")
             }
             .buttonStyle(PrimaryButtonStyle(color: Theme.backgroundLight))
+            .id("onboarding.challengeFriend")
+            .onboardingAnchor(.challengeFriend)
         }
         .panel()
+        .onboardingAnchor(.quickMatchCard)
     }
 
     private var quickMatchStats: some View {
@@ -372,10 +415,47 @@ struct HomeView: View {
     }
 
     private func startQuickMatch() {
-        if app.entitlements.isPremium || app.lives.consumeLife() {
-            showMatch = true
-        } else {
-            outOfLivesAlert = true
+        guard !app.onboardingStore.isActive || app.onboardingStore.step == .quickMatch else { return }
+        Task {
+            let result = await app.startQuickMatchSearch()
+            switch result {
+            case .online(let config):
+                app.onlineMatchToStart = config
+            case .ai:
+                aiAfterMatchmakingTimeout = app.matchmakingFellBackToAI
+                showMatch = true
+            case .cancelled:
+                break
+            case .outOfLives:
+                outOfLivesAlert = true
+            }
+        }
+    }
+}
+
+struct MatchmakingSearchingOverlay: View {
+    var onCancel: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.55).ignoresSafeArea()
+            VStack(spacing: 20) {
+                ProgressView()
+                    .scaleEffect(1.4)
+                    .tint(.white)
+                Text("Finding a player…")
+                    .font(.system(.title3, design: .rounded).weight(.bold))
+                    .foregroundColor(.white)
+                Text("Usually takes 10–20 seconds")
+                    .font(.system(.subheadline, design: .rounded))
+                    .foregroundColor(Theme.subtleText)
+                    .multilineTextAlignment(.center)
+                Button("Cancel", role: .cancel, action: onCancel)
+                    .foregroundColor(Theme.subtleText)
+            }
+            .padding(28)
+            .background(RoundedRectangle(cornerRadius: 20).fill(Theme.backgroundLight))
+            .padding(32)
         }
     }
 }
@@ -442,42 +522,11 @@ struct FriendChallengeSheet: View {
             ZStack {
                 Theme.background.ignoresSafeArea()
                 VStack(spacing: 18) {
-                    Text("Challenge a friend by username. They must be signed in and have the app open to accept.")
-                        .font(.system(.subheadline, design: .rounded))
-                        .foregroundColor(.white)
-                        .multilineTextAlignment(.center)
-
-                    TextField("Friend's username", text: $username)
-                        .textFieldStyle(.roundedBorder)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .disabled(busy)
-
-                    if let errorMessage {
-                        Text(errorMessage)
-                            .font(.system(.caption, design: .rounded).weight(.bold))
-                            .foregroundColor(Theme.lose)
-                            .multilineTextAlignment(.center)
-                    }
-
-                    Button("Send Challenge") {
-                        onChallenge(username.trimmingCharacters(in: .whitespacesAndNewlines))
-                    }
-                    .buttonStyle(PrimaryButtonStyle())
-                    .disabled(username.count < 3 || busy)
-
-                    ShareLink(
-                        item: ChallengeInviteLink.profileShareMessage(username: app.username),
-                        subject: Text("Play Worded with me")
-                    ) {
-                        Label("Invite via Text", systemImage: "message.fill")
-                    }
-                    .buttonStyle(PrimaryButtonStyle(color: Theme.backgroundLight))
-
-                    Text("Your first friend game each day is free — it won't use a life.")
-                        .font(.system(.caption, design: .rounded))
-                        .foregroundColor(Theme.subtleText)
-                        .multilineTextAlignment(.center)
+                    FriendChallengeContent(
+                        username: $username,
+                        busy: busy,
+                        errorMessage: errorMessage,
+                        onChallenge: onChallenge)
                     Spacer()
                 }
                 .padding(24)

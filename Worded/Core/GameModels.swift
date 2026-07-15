@@ -5,7 +5,7 @@ enum GameConstants {
     static let roundSeconds = 24
     static let pvpRoundsToWin = 4
     static let pvpMaxRounds = 7
-    static let matchmakingTimeoutSeconds = 15
+    static let matchmakingTimeoutSeconds = 20
     static let reconnectGraceSeconds = 20
     static let maxConsecutiveTiedReplays = 3
     static let dailyRackCounts = [5, 6, 7, 8, 9, 10]
@@ -16,9 +16,9 @@ enum GameConstants {
     static let revealSeconds: Double = 3.0
     static let transitionSeconds: Double = 2.0
 
-    /// Big daily racks (10+ tiles) get extra time to find long words.
+    /// Big daily racks (8+ tiles) get extra time to find long words.
     static func dailySeconds(forRackSize size: Int) -> Int {
-        size >= 10 ? 30 : roundSeconds
+        size >= 8 ? 30 : roundSeconds
     }
 
     /// Encodes tie-replay rounds into the submission `round` column (e.g. round 3

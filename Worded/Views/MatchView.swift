@@ -15,9 +15,14 @@ struct MatchView: View {
     @State private var showBadgeCelebration = false
     @State private var showExitConfirm = false
 
-    init(onlineMatch: OnlineMatchConfig? = nil, challengeService: MatchChallengeService? = nil) {
+    init(
+        onlineMatch: OnlineMatchConfig? = nil,
+        challengeService: MatchChallengeService? = nil,
+        aiAfterMatchmakingTimeout: Bool = false
+    ) {
         _engine = StateObject(wrappedValue: MatchEngine(
             onlineMatch: onlineMatch,
+            aiAfterMatchmakingTimeout: aiAfterMatchmakingTimeout,
             challengeService: challengeService))
     }
 
@@ -116,9 +121,18 @@ struct MatchView: View {
             ProgressView()
                 .scaleEffect(1.6)
                 .tint(.white)
-            Text(engine.isOnlineMatch ? "Connecting to \(engine.opponentName)…" : "Finding an opponent…")
+            Text(engine.isOnlineMatch
+                 ? "Connecting to \(engine.opponentName)…"
+                 : engine.aiAfterMatchmakingTimeout
+                    ? "No match found — playing a stand-in opponent"
+                    : "Finding an opponent…")
                 .font(.system(.title3, design: .rounded).weight(.bold))
                 .foregroundColor(.white)
+            if !engine.isOnlineMatch && !engine.aiAfterMatchmakingTimeout {
+                Text("Usually takes 10–20 seconds")
+                    .font(.system(.subheadline, design: .rounded))
+                    .foregroundColor(Theme.subtleText)
+            }
             Button("Cancel") {
                 app.finishOnlineMatch()
                 dismiss()
