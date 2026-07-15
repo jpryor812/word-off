@@ -16,11 +16,15 @@ final class AppState: ObservableObject {
     let statsStore = StatsStore()
     let badgeStore = BadgeStore()
     let challengeService = MatchChallengeService()
+    let matchmakingService = MatchmakingService()
+    let onboardingStore = OnboardingStore()
 
     @Published var onlineMatchToStart: OnlineMatchConfig?
     @Published var challengeStatusMessage: String?
     @Published var isWaitingForChallengeAccept = false
     @Published var pendingInviteChallenge: MatchChallengeInvite?
+    @Published var isMatchmaking = false
+    @Published var matchmakingFellBackToAI = false
 
     private var cancellables: Set<AnyCancellable> = []
     private var pendingDeepLinkChallengeId: String?
@@ -33,7 +37,9 @@ final class AppState: ObservableObject {
                       dailyStore.objectWillChange.eraseToAnyPublisher(),
                       statsStore.objectWillChange.eraseToAnyPublisher(),
                       badgeStore.objectWillChange.eraseToAnyPublisher(),
-                      challengeService.objectWillChange.eraseToAnyPublisher()] {
+                      challengeService.objectWillChange.eraseToAnyPublisher(),
+                      matchmakingService.objectWillChange.eraseToAnyPublisher(),
+                      onboardingStore.objectWillChange.eraseToAnyPublisher()] {
             child
                 .receive(on: RunLoop.main)
                 .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -104,6 +110,53 @@ final class AppState: ObservableObject {
         } else {
             challengeService.stopPolling()
         }
+    }
+
+    enum QuickMatchStartResult: Equatable {
+        case online(OnlineMatchConfig)
+        case ai
+        case cancelled
+        case outOfLives
+    }
+
+    /// Starts Quick Match: searches for a human up to 20s, then AI fallback.
+    /// Life is consumed only when a match actually begins.
+    func startQuickMatchSearch() async -> QuickMatchStartResult {
+        let canPlay = entitlements.isPremium || lives.livesRemaining > 0
+        guard canPlay else { return .outOfLives }
+
+        matchmakingFellBackToAI = false
+
+        if isLocalMode || session == nil {
+            if !entitlements.isPremium { _ = lives.consumeLife() }
+            return .ai
+        }
+
+        isMatchmaking = true
+        defer { isMatchmaking = false }
+
+        guard let userId = session?.userId else {
+            if !entitlements.isPremium { _ = lives.consumeLife() }
+            return .ai
+        }
+
+        let result = await matchmakingService.searchForMatch(myUserId: userId)
+        switch result {
+        case .matched(let config):
+            if !entitlements.isPremium { _ = lives.consumeLife() }
+            return .online(config)
+        case .aiFallback:
+            matchmakingFellBackToAI = true
+            if !entitlements.isPremium { _ = lives.consumeLife() }
+            return .ai
+        case .cancelled:
+            return .cancelled
+        }
+    }
+
+    func cancelQuickMatchSearch() {
+        matchmakingService.cancelSearch()
+        isMatchmaking = false
     }
 
     func sendFriendChallenge(to username: String) async throws {

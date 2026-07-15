@@ -92,7 +92,7 @@ struct PaywallView: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 benefit("Unlimited PvP games")
-                benefit("Play all daily challenges")
+                benefit("Reveal Top Words on every daily")
                 benefit("No ads")
             }
             .frame(maxWidth: .infinity, alignment: .leading)

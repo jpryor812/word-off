@@ -5,7 +5,6 @@ struct DailyHubView: View {
     @EnvironmentObject var app: AppState
     @Binding var showPaywall: Bool
     @State private var activeDailySize: Int?
-    @State private var limitAlert = false
     @State private var detailResult: DailyPuzzleResult?
     @State private var topWordsResult: DailyPuzzleResult?
 
@@ -18,27 +17,14 @@ struct DailyHubView: View {
                     .font(.system(.title3, design: .rounded).weight(.black))
                     .foregroundColor(Theme.tileText)
                 Spacer()
-                if !app.entitlements.isPremium {
-                    Text("\(app.lives.unlockedDailySizes.count)/\(GameConstants.freeDailyPuzzlesPerDay) picked")
-                        .font(.system(.caption, design: .rounded).weight(.bold))
-                        .foregroundColor(Theme.tileText.opacity(0.6))
-                }
             }
 
             ForEach(GameConstants.dailyRackCounts, id: \.self) { size in
                 dailyRow(size: size)
             }
-
-            if !app.entitlements.isPremium {
-                Button {
-                    showPaywall = true
-                } label: {
-                    Label("Unlock all \(GameConstants.dailyRackCounts.count) dailies", systemImage: "star.fill")
-                }
-                .buttonStyle(PrimaryButtonStyle(color: Theme.accentDark))
-            }
         }
         .panel()
+        .onboardingAnchor(.dailyHubCard)
         .onAppear {
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("-demo-daily") {
@@ -61,18 +47,13 @@ struct DailyHubView: View {
             DailyTopWordsView(result: result)
                 .environmentObject(app)
         }
-        .alert("Daily limit reached", isPresented: $limitAlert) {
-            Button("Go Premium") { showPaywall = true }
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text("Free players pick \(GameConstants.freeDailyPuzzlesPerDay) of the \(GameConstants.dailyRackCounts.count) daily puzzles. Get Premium or a Day Pass for all of them.")
-        }
     }
 
+    @ViewBuilder
     private func dailyRow(size: Int) -> some View {
         let played = app.dailyStore.result(day: today, rackSize: size)
         let done = played != nil
-        return HStack {
+        let row = HStack {
             numberBlock(size: size, done: done)
             VStack(alignment: .leading, spacing: 2) {
                 Text("\(size)-Letter Daily")
@@ -89,6 +70,22 @@ struct DailyHubView: View {
         .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.5)))
         .contentShape(Rectangle())
         .onTapGesture { tapDaily(size: size) }
+
+        if size == 5 {
+            row
+                .id("onboarding.fiveLetterDaily")
+                .onboardingAnchor(.fiveLetterDaily)
+                .onboardingDimmed(
+                    app.onboardingStore.isDailyRowDimmed(rackSize: size),
+                    focusRing: app.onboardingStore.isDailyRowFocused(rackSize: size),
+                    cornerRadius: 12)
+        } else {
+            row
+                .onboardingDimmed(
+                    app.onboardingStore.isDailyRowDimmed(rackSize: size),
+                    focusRing: false,
+                    cornerRadius: 12)
+        }
     }
 
     /// The left-hand rack-size tile. When the puzzle is done it gets a green
@@ -148,15 +145,15 @@ struct DailyHubView: View {
     }
 
     private func tapDaily(size: Int) {
+        if app.onboardingStore.step == .startFiveLetterDaily {
+            guard size == 5 else { return }
+            app.onboardingStore.beganFiveLetterDaily()
+        }
         if let played = app.dailyStore.result(day: today, rackSize: size) {
             detailResult = played
             return
         }
-        if app.lives.unlockDailySize(size, isPremium: app.entitlements.isPremium) {
-            activeDailySize = size
-        } else {
-            limitAlert = true
-        }
+        activeDailySize = size
     }
 }
 
@@ -185,33 +182,49 @@ struct DailyResultDetailView: View {
         NavigationStack {
             ZStack {
                 Theme.background.ignoresSafeArea()
-                ScrollView {
-                    VStack(spacing: 16) {
-                        summaryCard
-                        shareButton
-                        revealButton
-                        wordsCard
-                        leaderboardCard
-                        if showsDoneButton {
-                            Button("Done") {
-                                if let onDone {
-                                    onDone()
-                                } else {
-                                    dismiss()
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(spacing: 16) {
+                            summaryCard
+                                .dailyResultOnboardingSection(app.onboardingStore, section: .summary, focusRing: false)
+                            shareButton
+                                .dailyResultOnboardingSection(app.onboardingStore, section: .share, focusRing: false)
+                            revealButton
+                            wordsCard
+                                .dailyResultOnboardingSection(app.onboardingStore, section: .words, focusRing: false)
+                            leaderboardCard
+                            if showsDoneButton, !app.onboardingStore.isInDailyResultsOnboarding {
+                                Button("Done") {
+                                    if let onDone {
+                                        onDone()
+                                    } else {
+                                        dismiss()
+                                    }
                                 }
+                                    .font(.system(.subheadline, design: .rounded).weight(.bold))
+                                    .foregroundColor(Theme.subtleText)
+                                    .padding(.top, 4)
                             }
-                                .font(.system(.subheadline, design: .rounded).weight(.bold))
-                                .foregroundColor(Theme.subtleText)
-                                .padding(.top, 4)
                         }
+                        .padding()
                     }
-                    .padding()
+                    .onChange(of: app.onboardingStore.step) { _, _ in
+                        guard app.onboardingStore.scrollTargetID != nil else { return }
+                        OnboardingScroll.scrollToStep(
+                            store: app.onboardingStore,
+                            proxy: proxy)
+                    }
                 }
             }
-            .sheet(isPresented: $showTopWords) {
+            .coordinateSpace(name: DailyResultOnboardingCoordinateSpace.name)
+            .dailyResultOnboardingSpotlight(
+                store: app.onboardingStore,
+                onNext: { app.onboardingStore.advance() },
+                onSkip: { app.onboardingStore.skip() })
+            .sheet(isPresented: $showTopWords, onDismiss: handlePremiumOnboardingDismiss) {
                 DailyTopWordsView(result: result).environmentObject(app)
             }
-            .sheet(isPresented: $showPaywall) {
+            .sheet(isPresented: $showPaywall, onDismiss: handlePremiumOnboardingDismiss) {
                 PaywallView().environmentObject(app)
             }
             .navigationTitle("\(result.rackSize)-Letter Daily")
@@ -219,7 +232,15 @@ struct DailyResultDetailView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { dismiss() }
+                        .disabled(app.onboardingStore.isInDailyResultsOnboarding)
                 }
+            }
+        }
+        .onAppear {
+            guard app.onboardingStore.awaitingDailyResultsOnboarding else { return }
+            Task {
+                try? await Task.sleep(for: .milliseconds(OnboardingStore.dailyResultsRevealDelayMs))
+                app.onboardingStore.beginDailyResultsOnboarding()
             }
         }
         .task {
@@ -282,16 +303,38 @@ struct DailyResultDetailView: View {
     @ViewBuilder
     private var revealButton: some View {
         let unlocked = result.topWordsUnlocked(isPremium: app.entitlements.isPremium)
+        let onboardingPitch = app.onboardingStore.step == .dailyPremiumPitch
         Button {
-            if unlocked {
+            handleRevealTopWordsTap(unlocked: unlocked)
+        } label: {
+            Label("Reveal Top Words", systemImage: unlocked ? "trophy.fill" : "lock.fill")
+        }
+        .buttonStyle(PrimaryButtonStyle(color: unlocked && !onboardingPitch ? Theme.accent : Theme.backgroundLight))
+        .disabled(app.onboardingStore.step == .dailyLeaderboard)
+        .id("onboarding.revealTopWords")
+        .dailyResultOnboardingAnchor(.revealTopWords)
+        .dailyResultOnboardingSection(app.onboardingStore, section: .reveal, cornerRadius: 14)
+    }
+
+    private func handleRevealTopWordsTap(unlocked: Bool) {
+        if app.onboardingStore.step == .dailyPremiumPitch {
+            if app.entitlements.isPremium {
                 showTopWords = true
             } else {
                 showPaywall = true
             }
-        } label: {
-            Label("Reveal Top Words", systemImage: unlocked ? "trophy.fill" : "lock.fill")
+            return
         }
-        .buttonStyle(PrimaryButtonStyle(color: unlocked ? Theme.accent : Theme.backgroundLight))
+        if unlocked {
+            showTopWords = true
+        } else {
+            showPaywall = true
+        }
+    }
+
+    private func handlePremiumOnboardingDismiss() {
+        guard app.onboardingStore.step == .dailyPremiumPitch else { return }
+        app.onboardingStore.finishDailyOnboardingAndReturnHome()
     }
 
     private var wordsCard: some View {
@@ -377,6 +420,9 @@ struct DailyResultDetailView: View {
             }
         }
         .panel()
+        .id("onboarding.dailyLeaderboard")
+        .dailyResultOnboardingAnchor(.leaderboard)
+        .dailyResultOnboardingSection(app.onboardingStore, section: .leaderboard)
     }
 
     private func emptyState(_ message: String) -> some View {
@@ -466,6 +512,16 @@ struct DailyPlayView: View {
         .onChange(of: engine.phase) { _, newPhase in
             if newPhase == .playing { inputFocused = true }
             if newPhase == .finished { finishPuzzle() }
+        }
+        .onChange(of: app.onboardingStore.step) { _, step in
+            if step == .homePlayFreely {
+                dismiss()
+            }
+        }
+        .onChange(of: app.onboardingStore.isActive) { _, active in
+            if !active, engine.phase == .finished {
+                dismiss()
+            }
         }
         .alert("Leave daily challenge?", isPresented: $showExitConfirm) {
             Button("Leave", role: .destructive) { exitDaily() }

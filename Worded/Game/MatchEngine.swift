@@ -39,6 +39,7 @@ final class MatchEngine: ObservableObject {
     let opponent: AIOpponent
     let opponentName: String
     let isFriendGame: Bool
+    let aiAfterMatchmakingTimeout: Bool
     let onlineConfig: OnlineMatchConfig?
     weak var challengeService: MatchChallengeService?
 
@@ -61,6 +62,7 @@ final class MatchEngine: ObservableObject {
         onlineMatch: OnlineMatchConfig? = nil,
         opponentName: String? = nil,
         isFriendGame: Bool = false,
+        aiAfterMatchmakingTimeout: Bool = false,
         challengeService: MatchChallengeService? = nil
     ) {
         let ai = AIOpponent.random()
@@ -68,6 +70,7 @@ final class MatchEngine: ObservableObject {
         self.onlineConfig = onlineMatch
         self.challengeService = challengeService
         self.isFriendGame = isFriendGame || onlineMatch != nil
+        self.aiAfterMatchmakingTimeout = aiAfterMatchmakingTimeout
         if let onlineMatch {
             self.opponentName = onlineMatch.opponentUsername
             self.opponentBadgeStats = BadgeStats()
@@ -94,7 +97,9 @@ final class MatchEngine: ObservableObject {
                 beginRound()
             }
         } else {
-            let queueDelay = Double.random(in: 2.5...9.0)
+            let queueDelay = aiAfterMatchmakingTimeout
+                ? 0.8
+                : Double.random(in: 2.5...9.0)
             Task {
                 try? await Task.sleep(for: .seconds(queueDelay))
                 guard !Task.isCancelled else { return }
