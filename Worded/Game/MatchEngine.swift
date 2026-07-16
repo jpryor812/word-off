@@ -63,14 +63,15 @@ final class MatchEngine: ObservableObject {
         opponentName: String? = nil,
         isFriendGame: Bool = false,
         aiAfterMatchmakingTimeout: Bool = false,
+        aiTier: Int? = nil,
         challengeService: MatchChallengeService? = nil
     ) {
-        let ai = AIOpponent.random()
+        let ai = aiTier.map(AIOpponent.withTier) ?? AIOpponent.random()
         self.opponent = ai
         self.onlineConfig = onlineMatch
         self.challengeService = challengeService
         self.isFriendGame = isFriendGame || onlineMatch != nil
-        self.aiAfterMatchmakingTimeout = aiAfterMatchmakingTimeout
+        self.aiAfterMatchmakingTimeout = aiAfterMatchmakingTimeout || aiTier != nil
         if let onlineMatch {
             self.opponentName = onlineMatch.opponentUsername
             self.opponentBadgeStats = BadgeStats()

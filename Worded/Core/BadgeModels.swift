@@ -155,6 +155,21 @@ enum BadgeKind: String, CaseIterable, Codable {
         case .loginStreak: return 20
         }
     }
+
+    /// Ordered unlock steps for this badge (first unlock = prestige 1).
+    var thresholds: [Int] {
+        switch self {
+        case .dailyMaxWord, .pvpMaxWord, .speedBonus, .pvpWins, .game7:
+            return Self.countTiers
+        case .pvpDailyWins: return Self.dailyWinTiers
+        case .pvpWinStreak: return Self.winStreakTiers
+        case .loginStreak: return Self.loginStreakTiers
+        case .dailyStreak: return Self.dailyStreakTiers
+        case .dailyPercentile: return Self.percentileTiers
+        case .flawlessDaily, .cleanSweep, .fullMenuDaily:
+            return [1]
+        }
+    }
 }
 
 struct BadgeProgress: Equatable {
@@ -218,11 +233,16 @@ struct BadgeTrackItem: Identifiable, Equatable {
             if let next = nextThreshold {
                 return "\(current)/\(next)"
             }
-            if let earned = earnedTier {
-                return "Tier \(earned)"
+            if let level = prestigeLevel {
+                return "Level \(level)"
             }
             return "Not yet"
         }
+    }
+
+    /// 1-based prestige shown on the badge tile corner (nil if not earned yet).
+    var prestigeLevel: Int? {
+        BadgeTier.prestigeLevel(earnedTier: earnedTier, kind: kind)
     }
 
     var nextTierLabel: String? {
@@ -233,7 +253,11 @@ struct BadgeTrackItem: Identifiable, Equatable {
         case .pvpWinStreak: return "\(next) in a row"
         case .loginStreak, .dailyStreak: return "\(next) days"
         case .flawlessDaily, .cleanSweep, .fullMenuDaily: return "Earn once"
-        default: return "Tier \(next)"
+        default:
+            if let level = prestigeLevel {
+                return "Level \(level + 1)"
+            }
+            return "Level 1"
         }
     }
 }
@@ -288,27 +312,30 @@ struct EarnedBadge: Identifiable, Equatable {
 
     var id: String { "\(kind.rawValue)-\(tier)" }
 
+    /// Prestige shown on the tile (1 for first unlock, then 2, 3…).
+    var prestigeLevel: Int {
+        BadgeTier.prestigeLevel(earnedTier: tier, kind: kind) ?? 1
+    }
+
     var title: String {
         switch kind {
         case .dailyPercentile:
-            return "Top \(tier)% Daily"
-        case .loginStreak, .dailyStreak, .pvpWinStreak:
-            return "\(kind.label) · \(tier)"
-        case .pvpDailyWins:
-            return "\(kind.label) · \(tier) today"
-        case .flawlessDaily, .cleanSweep, .fullMenuDaily, .game7:
+            return "Top \(tier)% Daily · Level \(prestigeLevel)"
+        case .flawlessDaily, .cleanSweep, .fullMenuDaily:
             return kind.label
         default:
-            return "\(kind.label) · \(tier)"
+            return "\(kind.label) · Level \(prestigeLevel)"
         }
     }
 
+    /// Legacy metal colors — badges now use word-tile styling instead.
     var tierColor: Color {
         BadgeTier.color(for: tier)
     }
 }
 
 enum BadgeTier {
+    /// Old metal palette (unused by the tile badge UI; kept for any leftover refs).
     static func color(for tier: Int) -> Color {
         switch tier {
         case 100: return Color(red: 0.55, green: 0.75, blue: 1.0)   // diamond
@@ -321,6 +348,24 @@ enum BadgeTier {
 
     static func highestTier(for count: Int, thresholds: [Int] = BadgeKind.countTiers) -> Int? {
         thresholds.filter { count >= $0 }.max()
+    }
+
+    /// Maps an earned threshold onto prestige 1…n (order in `kind.thresholds`).
+    static func prestigeLevel(earnedTier: Int?, kind: BadgeKind) -> Int? {
+        guard let earned = earnedTier else { return nil }
+        let thresholds = kind.thresholds
+        if let index = thresholds.firstIndex(of: earned) {
+            return index + 1
+        }
+        switch kind {
+        case .dailyPercentile:
+            // Lower % is better: Top 25% → 1, Top 10% → 2, Top 5% → 3, Top 1% → 4.
+            let count = thresholds.filter { $0 >= earned }.count
+            return count > 0 ? count : 1
+        default:
+            let count = thresholds.filter { earned >= $0 }.count
+            return count > 0 ? count : nil
+        }
     }
 }
 

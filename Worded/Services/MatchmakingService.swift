@@ -19,47 +19,54 @@ enum MatchmakingError: LocalizedError {
 
 enum QuickMatchSearchResult: Equatable {
     case matched(OnlineMatchConfig)
-    case aiFallback
     case cancelled
+    // case timedOut // old 60s chooser (Keep waiting / Play AI)
+    // case aiFallback // older auto-AI path
 }
 
-/// Searches the Supabase matchmaking queue for a human opponent, polling until
-/// paired or the timeout elapses (then the caller falls back to AI).
+/// Searches the Supabase matchmaking queue for a human opponent until paired,
+/// cancelled, or the player opts into AI. Runs while browsing the rest of the app.
 @MainActor
 final class MatchmakingService: ObservableObject {
     @Published private(set) var isSearching = false
 
     private var searchTask: Task<QuickMatchSearchResult, Never>?
+    private var searchGeneration = 0
 
     func cancelSearch() {
         searchTask?.cancel()
         searchTask = nil
+        searchGeneration += 1
         isSearching = false
         Task { try? await cancelQueueEntry() }
     }
 
-    func searchForMatch(
-        myUserId: String,
-        timeoutSeconds: Int = GameConstants.matchmakingTimeoutSeconds
-    ) async -> QuickMatchSearchResult {
+    func searchForMatch(myUserId: String) async -> QuickMatchSearchResult {
         searchTask?.cancel()
+        searchGeneration += 1
+        let generation = searchGeneration
         let task = Task { () -> QuickMatchSearchResult in
-            await performSearch(myUserId: myUserId, timeoutSeconds: timeoutSeconds)
+            await performSearch(myUserId: myUserId)
         }
         searchTask = task
         isSearching = true
         let result = await task.value
-        isSearching = false
-        searchTask = nil
+        if generation == searchGeneration {
+            isSearching = false
+            searchTask = nil
+        }
         return result
     }
 
-    private func performSearch(myUserId: String, timeoutSeconds: Int) async -> QuickMatchSearchResult {
-        guard SupabaseConfig.isConfigured else { return .aiFallback }
-        guard SupabaseClient.shared.currentSession != nil else { return .aiFallback }
+    private func performSearch(myUserId: String) async -> QuickMatchSearchResult {
+        guard SupabaseConfig.isConfigured else {
+            return .cancelled
+        }
+        guard SupabaseClient.shared.currentSession != nil else {
+            return .cancelled
+        }
 
-        let deadline = Date().addingTimeInterval(TimeInterval(timeoutSeconds))
-
+        // Search until matched or cancelled — no timed AI prompt.
         while !Task.isCancelled {
             do {
                 if let config = try await enqueueOrPoll(myUserId: myUserId) {
@@ -67,11 +74,6 @@ final class MatchmakingService: ObservableObject {
                 }
             } catch {
                 if Task.isCancelled { return .cancelled }
-            }
-
-            if Date() >= deadline {
-                try? await cancelQueueEntry()
-                return .aiFallback
             }
 
             try? await Task.sleep(for: .seconds(1))

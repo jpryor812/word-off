@@ -606,7 +606,7 @@ private struct AnchoredOnboardingCallout: View {
         case .quickMatch:
             return "Play against another player from around the world in a quickfire best of 7 series."
         case .inviteFriend:
-            return "Challenge a friend by username or invite them via text. Your first friend game each day is free — it won't use a life."
+            return "Challenge a friend by username or invite them via text."
         case .homePlayFreely:
             return ""
         }

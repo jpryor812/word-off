@@ -54,6 +54,22 @@ struct RootView: View {
                             .zIndex(1)
                     }
                 }
+
+                if showHomeLayer, app.profile != nil, app.matchmakingBanner != .hidden {
+                    VStack {
+                        MatchmakingBanner()
+                            .environmentObject(app)
+                        Spacer()
+                    }
+                    .padding(.top, geo.safeAreaInsets.top)
+                    .zIndex(20)
+                }
+
+                if app.showAIDifficultyPicker {
+                    AIDifficultyPickerOverlay()
+                        .environmentObject(app)
+                        .zIndex(40)
+                }
             }
             .onAppear {
                 syncLayersForCurrentAuthState(screenHeight: geo.size.height)
@@ -86,6 +102,7 @@ struct RootView: View {
             Task { await app.handleIncomingURL(url) }
         }
         .onChange(of: scenePhase) { _, phase in
+            app.handleScenePhase(phase)
             if phase == .active {
                 app.recordActivity()
                 app.enforceSessionRetention()

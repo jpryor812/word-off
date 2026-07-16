@@ -497,7 +497,18 @@ struct DailyPlayView: View {
                 }
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if app.matchmakingBanner != .hidden {
+                MatchmakingBanner()
+            }
+        }
+        .overlay {
+            if app.showAIDifficultyPicker {
+                AIDifficultyPickerOverlay()
+            }
+        }
         .onAppear {
+            app.isInDailyPlay = true
             badgeSnapshot = app.badgeStore.currentTracks(
                 loginStreak: app.lives.loginStreak,
                 dailyStreak: app.lives.dailyCompletionStreak,
@@ -505,7 +516,19 @@ struct DailyPlayView: View {
                 winStreak: app.statsStore.winStreak)
             engine.start()
         }
-        .onDisappear { engine.cancel() }
+        .onDisappear {
+            engine.cancel()
+            app.handleDailyPlayDidDismiss()
+        }
+        .onChange(of: app.requestExitDailyPlay) { _, shouldExit in
+            guard shouldExit else { return }
+            // Leave daily (lock score) so the pending online/AI match can start.
+            if engine.phase != .finished {
+                engine.exitEarly()
+                finishPuzzle()
+            }
+            dismiss()
+        }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase != .active { engine.playerLeftApp() }
         }

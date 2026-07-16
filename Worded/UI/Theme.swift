@@ -44,20 +44,63 @@ struct TileView: View {
                 .fill(flipped ? Theme.tileFace : Theme.tileEdge)
                 .shadow(color: .black.opacity(0.25), radius: 2, y: 2)
             if flipped {
-                VStack(spacing: 0) {
-                    Text(String(letter))
-                        .font(.system(size: size * 0.52, weight: .heavy, design: .rounded))
-                        .foregroundColor(Theme.tileText)
-                    if let value = LetterBag.values[letter] {
-                        Text("\(value)")
-                            .font(.system(size: size * 0.22, weight: .bold, design: .rounded))
-                            .foregroundColor(Theme.tileText.opacity(0.65))
-                    }
+                Text(String(letter))
+                    .font(.system(size: size * 0.52, weight: .heavy, design: .rounded))
+                    .foregroundColor(Theme.tileText)
+                if let value = LetterBag.values[letter] {
+                    Text("\(value)")
+                        .font(.system(size: size * 0.22, weight: .bold, design: .rounded))
+                        .foregroundColor(Theme.tileText.opacity(0.65))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                        .padding(.top, size * 0.06)
+                        .padding(.trailing, size * 0.08)
                 }
             }
         }
         .frame(width: size, height: size)
         .rotation3DEffect(.degrees(flipped ? 0 : 180), axis: (x: 0, y: 1, z: 0))
+    }
+}
+
+/// Word-tile badge: cream face, gold border, SF Symbol instead of a letter,
+/// prestige in the top-right corner (same spot as letter point values).
+struct BadgeTileView: View {
+    let icon: String
+    /// Prestige level 1…n; nil = not earned yet (dimmed tile, no number).
+    var prestige: Int? = nil
+    var size: CGFloat = 44
+    var dimmed: Bool = false
+
+    private static let goldBorder = Color(red: 0.85, green: 0.68, blue: 0.18)
+
+    var body: some View {
+        let locked = dimmed || prestige == nil
+        let corner = size * 0.18
+        ZStack {
+            RoundedRectangle(cornerRadius: corner)
+                .fill(locked ? Theme.tileFace.opacity(0.5) : Theme.tileFace)
+                .shadow(color: .black.opacity(locked ? 0.12 : 0.25), radius: 2, y: 2)
+                .overlay(
+                    RoundedRectangle(cornerRadius: corner)
+                        .strokeBorder(
+                            Self.goldBorder.opacity(locked ? 0.35 : 1),
+                            lineWidth: max(1.5, size * 0.045))
+                )
+
+            Image(systemName: icon)
+                .font(.system(size: size * 0.42, weight: .bold))
+                .foregroundColor(Theme.tileText.opacity(locked ? 0.35 : 0.9))
+
+            if let prestige {
+                Text("\(prestige)")
+                    .font(.system(size: size * 0.22, weight: .bold, design: .rounded))
+                    .foregroundColor(Theme.tileText.opacity(0.65))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+                    .padding(.top, size * 0.06)
+                    .padding(.trailing, size * 0.08)
+            }
+        }
+        .frame(width: size, height: size)
     }
 }
 

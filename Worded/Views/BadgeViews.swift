@@ -77,8 +77,12 @@ struct BadgeAvatarView: View {
     var body: some View {
         ZStack {
             ForEach(Array(badges.enumerated()), id: \.element.id) { index, badge in
-                badgeChip(badge)
-                    .offset(badgeOffset(index: index, count: badges.count))
+                BadgeTileView(
+                    icon: badge.kind.icon,
+                    prestige: badge.prestigeLevel,
+                    size: 30)
+                .offset(badgeOffset(index: index, count: badges.count))
+                .accessibilityLabel(badge.title)
             }
 
             RoundedRectangle(cornerRadius: 16)
@@ -94,19 +98,6 @@ struct BadgeAvatarView: View {
                 .foregroundColor(.white)
         }
         .frame(width: size + 44, height: size + 44)
-    }
-
-    private func badgeChip(_ badge: EarnedBadge) -> some View {
-        ZStack {
-            Circle()
-                .fill(badge.tierColor)
-                .frame(width: 28, height: 28)
-                .shadow(color: .black.opacity(0.2), radius: 2, y: 1)
-            Image(systemName: badge.kind.icon)
-                .font(.system(size: 12, weight: .bold))
-                .foregroundColor(.white)
-        }
-        .accessibilityLabel(badge.title)
     }
 
     /// Places badges evenly around the avatar square border.
@@ -125,27 +116,14 @@ struct BadgeAvatarView: View {
 struct BadgeProgressRow: View {
     let track: BadgeTrackItem
 
-    private var accentColor: Color {
-        if track.isMaxed, let tier = track.earnedTier {
-            return BadgeTier.color(for: tier)
-        }
-        if let next = track.nextThreshold {
-            return BadgeTier.color(for: next)
-        }
-        return Theme.tileText.opacity(0.35)
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 10) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(accentColor.opacity(track.earnedTier != nil ? 1 : 0.2))
-                        .frame(width: 34, height: 34)
-                    Image(systemName: track.kind.icon)
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundColor(track.earnedTier != nil ? .white : accentColor)
-                }
+                BadgeTileView(
+                    icon: track.kind.icon,
+                    prestige: track.prestigeLevel,
+                    size: 36,
+                    dimmed: track.prestigeLevel == nil)
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
@@ -155,11 +133,11 @@ struct BadgeProgressRow: View {
                         if track.isMaxed {
                             Image(systemName: "checkmark.seal.fill")
                                 .font(.system(size: 12))
-                                .foregroundColor(accentColor)
-                        } else if let earned = track.earnedTier {
-                            Text("· \(tierTitle(earned))")
+                                .foregroundColor(Theme.win)
+                        } else if let level = track.prestigeLevel {
+                            Text("· Level \(level)")
                                 .font(.system(.caption, design: .rounded).weight(.bold))
-                                .foregroundColor(BadgeTier.color(for: earned))
+                                .foregroundColor(Theme.tileText.opacity(0.55))
                         }
                     }
                     Text(track.detail)
@@ -182,7 +160,7 @@ struct BadgeProgressRow: View {
                         Capsule()
                             .fill(Theme.tileText.opacity(0.1))
                         Capsule()
-                            .fill(accentColor)
+                            .fill(Theme.accent)
                             .frame(width: geo.size.width * track.progressFraction)
                     }
                 }
@@ -196,14 +174,6 @@ struct BadgeProgressRow: View {
             }
         }
         .padding(.vertical, 4)
-    }
-
-    private func tierTitle(_ tier: Int) -> String {
-        switch track.kind {
-        case .dailyPercentile: return "Top \(tier)%"
-        case .flawlessDaily, .cleanSweep, .fullMenuDaily: return "Earned"
-        default: return "Tier \(tier)"
-        }
     }
 }
 
@@ -264,30 +234,18 @@ private struct BadgeProgressCelebrationRow: View {
     @State private var numberScale: CGFloat = 1
     @State private var numberShake: CGFloat = 0
 
-    private var accent: Color {
-        if delta.newlyEarned {
-            return Theme.win
-        }
-        if let tier = delta.earnedTier {
-            return BadgeTier.color(for: tier)
-        }
-        if let next = delta.nextThreshold {
-            return BadgeTier.color(for: next)
-        }
-        return Theme.accent
+    private var prestige: Int? {
+        BadgeTier.prestigeLevel(earnedTier: delta.earnedTier, kind: delta.kind)
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(accent.opacity(delta.newlyEarned || delta.earnedTier != nil ? 1 : 0.25))
-                        .frame(width: 40, height: 40)
-                    Image(systemName: delta.kind.icon)
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundColor(delta.newlyEarned || delta.earnedTier != nil ? .white : accent)
-                }
+                BadgeTileView(
+                    icon: delta.kind.icon,
+                    prestige: prestige,
+                    size: 42,
+                    dimmed: prestige == nil && !delta.newlyEarned)
 
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
@@ -301,6 +259,10 @@ private struct BadgeProgressCelebrationRow: View {
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
                                 .background(Capsule().fill(Theme.win))
+                        } else if let prestige {
+                            Text("· Level \(prestige)")
+                                .font(.system(.caption, design: .rounded).weight(.bold))
+                                .foregroundColor(Theme.tileText.opacity(0.55))
                         }
                     }
                     Text(delta.kind.detail)
@@ -323,7 +285,7 @@ private struct BadgeProgressCelebrationRow: View {
                     Capsule()
                         .fill(Theme.tileText.opacity(0.12))
                     Capsule()
-                        .fill(accent)
+                        .fill(delta.newlyEarned ? Theme.win : Theme.accent)
                         .frame(width: max(4, geo.size.width * barFraction))
                 }
             }
@@ -350,7 +312,6 @@ private struct BadgeProgressCelebrationRow: View {
             withAnimation(.spring(response: 0.28, dampingFraction: 0.45)) {
                 numberScale = 1.35
             }
-            // Shake left-right for ~1s
             for _ in 0..<6 {
                 withAnimation(.easeInOut(duration: 0.08)) { numberShake = 5 }
                 try? await Task.sleep(for: .seconds(0.08))

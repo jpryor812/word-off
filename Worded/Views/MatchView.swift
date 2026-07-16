@@ -18,11 +18,13 @@ struct MatchView: View {
     init(
         onlineMatch: OnlineMatchConfig? = nil,
         challengeService: MatchChallengeService? = nil,
-        aiAfterMatchmakingTimeout: Bool = false
+        aiAfterMatchmakingTimeout: Bool = false,
+        aiTier: Int? = nil
     ) {
         _engine = StateObject(wrappedValue: MatchEngine(
             onlineMatch: onlineMatch,
             aiAfterMatchmakingTimeout: aiAfterMatchmakingTimeout,
+            aiTier: aiTier,
             challengeService: challengeService))
     }
 

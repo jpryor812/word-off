@@ -1,6 +1,23 @@
 import Foundation
 import SwiftUI
 import Combine
+import UIKit
+
+enum MatchmakingBannerPhase: Equatable {
+    case hidden
+    case searching
+    case matchFound(opponentName: String)
+    // case noPlayersFound // old 60s Keep waiting / Play AI chooser
+    // case aiReady
+}
+
+enum BeginQuickMatchResult: Equatable {
+    case started
+    case outOfLives
+    case alreadyBusy
+    /// Local / unsigned-in mode — start AI immediately.
+    case localAI
+}
 
 @MainActor
 final class AppState: ObservableObject {
@@ -23,8 +40,29 @@ final class AppState: ObservableObject {
     @Published var challengeStatusMessage: String?
     @Published var isWaitingForChallengeAccept = false
     @Published var pendingInviteChallenge: MatchChallengeInvite?
+    /// True while actively polling the matchmaking queue.
     @Published var isMatchmaking = false
     @Published var matchmakingFellBackToAI = false
+    /// Compact status strip while searching / holding a found match.
+    @Published var matchmakingBanner: MatchmakingBannerPhase = .hidden
+    /// Human match ready but not yet started (e.g. player is in a daily).
+    @Published var pendingOnlineMatch: OnlineMatchConfig?
+    /// AI match waiting to start after leaving a daily (or difficulty confirm).
+    @Published var pendingAIMatch = false
+    /// Difficulty sheet after tapping Play AI.
+    @Published var showAIDifficultyPicker = false
+    @Published var selectedAIDifficulty = 5
+    /// Tier for the next AI MatchView launch (nil = random).
+    @Published var pendingAITier: Int?
+    /// Bumped to tell Home to present an AI MatchView.
+    @Published var launchAIMatchToken = 0
+    /// Daily puzzle is on screen — don't auto-interrupt with a found match.
+    @Published var isInDailyPlay = false
+    /// Ask DailyPlayView to dismiss so a pending match can start.
+    @Published var requestExitDailyPlay = false
+    private var startMatchAfterDailyExit = false
+    private var isAppInForeground = true
+    private var matchmakingBackgroundTask: UIBackgroundTaskIdentifier = .invalid
 
     private var cancellables: Set<AnyCancellable> = []
     private var pendingDeepLinkChallengeId: String?
@@ -113,58 +151,203 @@ final class AppState: ObservableObject {
         }
     }
 
-    enum QuickMatchStartResult: Equatable {
-        case online(OnlineMatchConfig)
-        case ai
-        case cancelled
-        case outOfLives
-    }
+    /// Starts a non-blocking quick-match search (banner stays up while browsing).
+    /// Life is consumed only when a match (human or AI) actually begins.
+    func beginBackgroundQuickMatch() -> BeginQuickMatchResult {
+        if isMatchmaking || pendingOnlineMatch != nil || pendingAIMatch || showAIDifficultyPicker {
+            return .alreadyBusy
+        }
 
-    /// Starts Quick Match: searches for a human up to 20s, then AI fallback.
-    /// Life is consumed only when a match actually begins.
-    func startQuickMatchSearch() async -> QuickMatchStartResult {
         let canPlay = entitlements.isPremium || lives.livesRemaining > 0
         guard canPlay else { return .outOfLives }
 
         matchmakingFellBackToAI = false
+        pendingOnlineMatch = nil
+        pendingAIMatch = false
+        pendingAITier = nil
 
         if isLocalMode || session == nil {
-            if !entitlements.isPremium {
-                _ = lives.consumeLife()
-                noteLifeDeductionIfNeeded()
-            }
-            return .ai
+            return .localAI
         }
-
-        isMatchmaking = true
-        defer { isMatchmaking = false }
 
         guard let userId = session?.userId else {
-            if !entitlements.isPremium {
-                _ = lives.consumeLife()
-                noteLifeDeductionIfNeeded()
-            }
-            return .ai
+            return .localAI
         }
 
-        let result = await matchmakingService.searchForMatch(myUserId: userId)
+        startMatchmakingSearch(userId: userId, requestNotificationAuth: true)
+        return .started
+    }
+
+    /// Stop searching and show the 1–10 difficulty picker.
+    func presentAIDifficultyPicker() {
+        matchmakingService.cancelSearch()
+        isMatchmaking = false
+        endMatchmakingBackgroundTask()
+        matchmakingBanner = .hidden
+        MatchmakingNotifications.clearMatchFound()
+        selectedAIDifficulty = 5
+        showAIDifficultyPicker = true
+    }
+
+    func dismissAIDifficultyPicker() {
+        showAIDifficultyPicker = false
+    }
+
+    func confirmAIDifficultyAndPlay(tier: Int) {
+        let clamped = min(10, max(1, tier))
+        selectedAIDifficulty = clamped
+        pendingAITier = clamped
+        showAIDifficultyPicker = false
+        matchmakingFellBackToAI = true
+        pendingAIMatch = true
+
+        if isInDailyPlay {
+            startMatchAfterDailyExit = true
+            requestExitDailyPlay = true
+            return
+        }
+        startPendingAIMatch()
+    }
+
+    func handleScenePhase(_ phase: ScenePhase) {
+        isAppInForeground = phase == .active
+        if phase == .active {
+            MatchmakingNotifications.clearMatchFound()
+            if !isInDailyPlay, let config = pendingOnlineMatch, matchmakingBanner == .hidden {
+                matchmakingBanner = .matchFound(opponentName: config.opponentUsername)
+            }
+        } else if phase == .background, isMatchmaking {
+            beginMatchmakingBackgroundTask()
+        }
+    }
+
+    /// Player tapped the match-found banner.
+    func acceptMatchmakingBannerAction() {
+        guard pendingOnlineMatch != nil else { return }
+        if isInDailyPlay {
+            startMatchAfterDailyExit = true
+            requestExitDailyPlay = true
+            return
+        }
+        if let config = pendingOnlineMatch {
+            startPendingOnlineMatch(config)
+        }
+    }
+
+    private func startMatchmakingSearch(userId: String, requestNotificationAuth: Bool) {
+        isMatchmaking = true
+        matchmakingBanner = .searching
+        beginMatchmakingBackgroundTask()
+
+        Task {
+            if requestNotificationAuth {
+                await MatchmakingNotifications.requestAuthorizationIfNeeded()
+            }
+            guard self.isMatchmaking else { return }
+            let result = await matchmakingService.searchForMatch(myUserId: userId)
+            self.handleMatchmakingSearchResult(result)
+        }
+    }
+
+    func handleDailyPlayDidDismiss() {
+        isInDailyPlay = false
+        requestExitDailyPlay = false
+        guard startMatchAfterDailyExit else { return }
+        startMatchAfterDailyExit = false
+        if let config = pendingOnlineMatch {
+            startPendingOnlineMatch(config)
+        } else if pendingAIMatch {
+            startPendingAIMatch()
+        }
+    }
+
+    func dismissMatchmakingBanner() {
+        if isMatchmaking {
+            cancelQuickMatchSearch()
+            return
+        }
+        startMatchAfterDailyExit = false
+        pendingOnlineMatch = nil
+        pendingAIMatch = false
+        matchmakingBanner = .hidden
+        MatchmakingNotifications.clearMatchFound()
+    }
+
+    private func handleMatchmakingSearchResult(_ result: QuickMatchSearchResult) {
+        isMatchmaking = false
+        endMatchmakingBackgroundTask()
+
         switch result {
         case .matched(let config):
-            if !entitlements.isPremium {
-                _ = lives.consumeLife()
-                noteLifeDeductionIfNeeded()
+            pendingOnlineMatch = config
+            let busy = isInDailyPlay || !isAppInForeground
+            if busy {
+                matchmakingBanner = .matchFound(opponentName: config.opponentUsername)
+                if !isAppInForeground {
+                    MatchmakingNotifications.postMatchFound(opponentName: config.opponentUsername)
+                }
+            } else {
+                startPendingOnlineMatch(config)
             }
-            return .online(config)
-        case .aiFallback:
-            matchmakingFellBackToAI = true
-            if !entitlements.isPremium {
-                _ = lives.consumeLife()
-                noteLifeDeductionIfNeeded()
-            }
-            return .ai
+
         case .cancelled:
-            return .cancelled
+            // Don't clear if the player opened the AI difficulty picker.
+            if !showAIDifficultyPicker {
+                clearMatchmakingUI()
+            }
         }
+    }
+
+    private func startPendingOnlineMatch(_ config: OnlineMatchConfig) {
+        if !entitlements.isPremium {
+            _ = lives.consumeLife()
+            noteLifeDeductionIfNeeded()
+        }
+        pendingOnlineMatch = nil
+        pendingAIMatch = false
+        pendingAITier = nil
+        matchmakingBanner = .hidden
+        MatchmakingNotifications.clearMatchFound()
+        onlineMatchToStart = config
+    }
+
+    private func startPendingAIMatch() {
+        if !entitlements.isPremium {
+            _ = lives.consumeLife()
+            noteLifeDeductionIfNeeded()
+        }
+        pendingOnlineMatch = nil
+        pendingAIMatch = false
+        matchmakingBanner = .hidden
+        MatchmakingNotifications.clearMatchFound()
+        launchAIMatchToken += 1
+    }
+
+    private func clearMatchmakingUI() {
+        pendingOnlineMatch = nil
+        pendingAIMatch = false
+        matchmakingBanner = .hidden
+        MatchmakingNotifications.clearMatchFound()
+    }
+
+    private func beginMatchmakingBackgroundTask() {
+        endMatchmakingBackgroundTask()
+        matchmakingBackgroundTask = UIApplication.shared.beginBackgroundTask(withName: "worded.matchmaking") { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                // iOS is about to freeze us — we can't keep polling.
+                if self.isMatchmaking, !self.isAppInForeground {
+                    MatchmakingNotifications.postSearchPaused()
+                }
+                self.endMatchmakingBackgroundTask()
+            }
+        }
+    }
+
+    private func endMatchmakingBackgroundTask() {
+        guard matchmakingBackgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(matchmakingBackgroundTask)
+        matchmakingBackgroundTask = .invalid
     }
 
     /// Queues the contextual lives teach when a daily life was just spent.
@@ -176,6 +359,8 @@ final class AppState: ObservableObject {
     func cancelQuickMatchSearch() {
         matchmakingService.cancelSearch()
         isMatchmaking = false
+        endMatchmakingBackgroundTask()
+        clearMatchmakingUI()
     }
 
     func sendFriendChallenge(to username: String) async throws {

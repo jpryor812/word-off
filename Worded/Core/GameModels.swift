@@ -5,7 +5,11 @@ enum GameConstants {
     static let roundSeconds = 24
     static let pvpRoundsToWin = 4
     static let pvpMaxRounds = 7
-    static let matchmakingTimeoutSeconds = 20
+    /// Legacy search-window constant (timeout chooser removed — search until
+    /// match, Cancel, or Play AI). Kept for any remaining schedule helpers.
+    // static let matchmakingTimeoutSeconds = 20
+    // static let matchmakingTimeoutSeconds = 60
+    static let matchmakingTimeoutSeconds = 60
     static let reconnectGraceSeconds = 20
     static let maxConsecutiveTiedReplays = 3
     static let dailyRackCounts = [5, 6, 7, 8, 9, 10]

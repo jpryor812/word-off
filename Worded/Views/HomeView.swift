@@ -10,6 +10,7 @@ struct HomeView: View {
     @State private var challengeError: String?
     @State private var challengingUsername: String?
     @State private var aiAfterMatchmakingTimeout = false
+    @State private var aiTier: Int?
 
     var body: some View {
         NavigationStack {
@@ -81,7 +82,9 @@ struct HomeView: View {
                     }
             }
             .fullScreenCover(isPresented: $showMatch, onDismiss: presentLivesIntroIfNeeded) {
-                MatchView(aiAfterMatchmakingTimeout: aiAfterMatchmakingTimeout)
+                MatchView(
+                    aiAfterMatchmakingTimeout: aiAfterMatchmakingTimeout,
+                    aiTier: aiTier)
                     .environmentObject(app)
             }
             .sheet(isPresented: $showFriendSheet) {
@@ -102,11 +105,7 @@ struct HomeView: View {
                 app.pendingChallengeUsername = nil
             }
             .overlay {
-                if app.isMatchmaking {
-                    MatchmakingSearchingOverlay(onCancel: {
-                        app.cancelQuickMatchSearch()
-                    })
-                } else if app.isWaitingForChallengeAccept, let name = challengingUsername {
+                if app.isWaitingForChallengeAccept, let name = challengingUsername {
                     ChallengeWaitingOverlay(
                         opponentName: name,
                         invite: app.pendingInviteChallenge,
@@ -116,6 +115,13 @@ struct HomeView: View {
                             challengingUsername = nil
                         })
                 }
+            }
+            .onChange(of: app.launchAIMatchToken) { _, _ in
+                guard app.launchAIMatchToken > 0 else { return }
+                aiAfterMatchmakingTimeout = app.matchmakingFellBackToAI
+                aiTier = app.pendingAITier
+                app.pendingAITier = nil
+                showMatch = true
             }
             .sheet(isPresented: $showPaywall) {
                 PaywallView().environmentObject(app)
@@ -346,11 +352,15 @@ struct HomeView: View {
             Button {
                 startQuickMatch()
             } label: {
-                Label("Play Online", systemImage: "bolt.fill")
+                if case .searching = app.matchmakingBanner {
+                    Label("Searching…", systemImage: "antenna.radiowaves.left.and.right")
+                } else {
+                    Label("Play Online", systemImage: "bolt.fill")
+                }
             }
             .buttonStyle(PrimaryButtonStyle())
             .onboardingAnchor(.playOnline)
-            .disabled(app.onboardingStore.isActive && app.onboardingStore.step != .quickMatch)
+            .disabled(playOnlineDisabled)
 
             Button {
                 guard !app.onboardingStore.isActive else { return }
@@ -368,6 +378,11 @@ struct HomeView: View {
         }
         .panel()
         .onboardingAnchor(.quickMatchCard)
+    }
+
+    private var playOnlineDisabled: Bool {
+        if case .searching = app.matchmakingBanner { return true }
+        return app.onboardingStore.isActive && app.onboardingStore.step != .quickMatch
     }
 
     private var quickMatchStats: some View {
@@ -403,11 +418,14 @@ struct HomeView: View {
 
     private func nextBadgeHintRow(_ hint: BadgeProgress) -> some View {
         let progress = Double(hint.current) / Double(hint.nextThreshold)
+        let earnedSoFar = hint.kind.thresholds.filter { hint.current >= $0 }.count
         return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: hint.kind.icon)
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundColor(BadgeTier.color(for: hint.nextThreshold))
+            HStack(spacing: 8) {
+                BadgeTileView(
+                    icon: hint.kind.icon,
+                    prestige: earnedSoFar > 0 ? earnedSoFar : nil,
+                    size: 28,
+                    dimmed: earnedSoFar == 0)
                 Text("Next badge: \(hint.kind.label)")
                     .font(.system(.caption, design: .rounded).weight(.bold))
                     .foregroundColor(Theme.tileText.opacity(0.7))
@@ -423,7 +441,7 @@ struct HomeView: View {
                 ZStack(alignment: .leading) {
                     Capsule().fill(Theme.tileEdge.opacity(0.35))
                     Capsule()
-                        .fill(BadgeTier.color(for: hint.nextThreshold))
+                        .fill(Theme.accent)
                         .frame(width: geo.size.width * min(1, progress))
                 }
             }
@@ -464,46 +482,17 @@ struct HomeView: View {
 
     private func startQuickMatch() {
         guard !app.onboardingStore.isActive || app.onboardingStore.step == .quickMatch else { return }
-        Task {
-            let result = await app.startQuickMatchSearch()
-            switch result {
-            case .online(let config):
-                app.onlineMatchToStart = config
-            case .ai:
-                aiAfterMatchmakingTimeout = app.matchmakingFellBackToAI
-                showMatch = true
-            case .cancelled:
-                break
-            case .outOfLives:
-                outOfLivesAlert = true
+        switch app.beginBackgroundQuickMatch() {
+        case .started:
+            break
+        case .localAI:
+            app.presentAIDifficultyPicker()
+        case .outOfLives:
+            outOfLivesAlert = true
+        case .alreadyBusy:
+            if app.pendingOnlineMatch != nil {
+                app.acceptMatchmakingBannerAction()
             }
-        }
-    }
-}
-
-struct MatchmakingSearchingOverlay: View {
-    var onCancel: () -> Void
-
-    var body: some View {
-        ZStack {
-            Color.black.opacity(0.55).ignoresSafeArea()
-            VStack(spacing: 20) {
-                ProgressView()
-                    .scaleEffect(1.4)
-                    .tint(.white)
-                Text("Finding a player…")
-                    .font(.system(.title3, design: .rounded).weight(.bold))
-                    .foregroundColor(.white)
-                Text("Usually takes 10–20 seconds")
-                    .font(.system(.subheadline, design: .rounded))
-                    .foregroundColor(Theme.subtleText)
-                    .multilineTextAlignment(.center)
-                Button("Cancel", role: .cancel, action: onCancel)
-                    .foregroundColor(Theme.subtleText)
-            }
-            .padding(28)
-            .background(RoundedRectangle(cornerRadius: 20).fill(Theme.backgroundLight))
-            .padding(32)
         }
     }
 }
