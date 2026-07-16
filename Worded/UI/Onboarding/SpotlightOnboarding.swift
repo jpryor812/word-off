@@ -45,7 +45,7 @@ extension View {
     ) -> some View {
         onboardingDimmed(
             store.isHomeSectionDimmed(section),
-            focusRing: focusRing && store.isHomeSectionFocused(section),
+            focusRing: focusRing && store.isHomeSectionFocusRing(section),
             cornerRadius: cornerRadius)
     }
 
@@ -105,18 +105,20 @@ extension View {
         store: OnboardingStore,
         isPremium: Bool,
         onNext: @escaping () -> Void,
-        onSkip: @escaping () -> Void
+        onSkip: @escaping () -> Void,
+        onLivesIntroDone: @escaping () -> Void = {}
     ) -> some View {
         overlayPreferenceValue(OnboardingAnchorPreferenceKey.self) { anchorMap in
             GeometryReader { proxy in
-                if store.isActive {
+                if store.isActive || store.isLivesIntroActive {
                     let arrowRects = anchorMap.mapValues { proxy[$0] }
                     HomeOnboardingOverlay(
                         store: store,
                         arrowTargets: arrowRects,
                         isPremium: isPremium,
                         onNext: onNext,
-                        onSkip: onSkip)
+                        onSkip: onSkip,
+                        onLivesIntroDone: onLivesIntroDone)
                 }
             }
         }
@@ -161,8 +163,13 @@ enum OnboardingScroll {
         } else {
             proxy.scrollTo(target, anchor: anchor)
         }
+        // Give the six-letter row an extra beat so its anchor is available
+        // before the callout tries to sit underneath it.
+        let delay = store.step == .startSixLetterDaily
+            ? OnboardingStore.stepTransitionDelayMs + 200
+            : OnboardingStore.stepTransitionDelayMs
         Task {
-            try? await Task.sleep(for: .milliseconds(OnboardingStore.stepTransitionDelayMs))
+            try? await Task.sleep(for: .milliseconds(delay))
             await MainActor.run {
                 store.finishStepTransition()
             }
@@ -178,12 +185,48 @@ struct HomeOnboardingOverlay: View {
     let isPremium: Bool
     var onNext: () -> Void
     var onSkip: () -> Void
+    var onLivesIntroDone: () -> Void = {}
 
     var body: some View {
         ZStack {
-            if store.step == .homePlayFreely {
+            if store.isLivesIntroActive {
+                if store.blocksHomeInteraction {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .ignoresSafeArea()
+                }
+                LivesIntroCallout(
+                    focusRect: arrowTargets[.livesCard],
+                    isVisible: store.livesIntroPhase == .showingCallout,
+                    onDone: onLivesIntroDone)
+            } else if store.step == .homePlayFreely {
                 HomeWelcomeOverlay(onContinue: onNext, onSkip: onSkip)
-            } else if store.isOnHomeTour || store.step == .startFiveLetterDaily {
+            } else if store.step == .twoWaysToPlay {
+                if store.blocksHomeInteraction {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .ignoresSafeArea()
+                }
+                TwoWaysToPlayCallout(
+                    isVisible: !store.isStepTransitioning,
+                    onNext: onNext,
+                    onSkip: onSkip)
+            } else if store.step == .startSixLetterDaily {
+                if store.blocksHomeInteraction {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .ignoresSafeArea()
+                }
+                AnchoredOnboardingCallout(
+                    step: .startSixLetterDaily,
+                    isPremium: isPremium,
+                    focusRect: arrowTargets[.sixLetterDaily],
+                    placement: .belowMidScreen,
+                    showsNext: false,
+                    isVisible: !store.isStepTransitioning,
+                    onNext: onNext,
+                    onSkip: onSkip)
+            } else if store.isOnHomeTour {
                 if store.blocksHomeInteraction {
                     Color.clear
                         .contentShape(Rectangle())
@@ -196,7 +239,7 @@ struct HomeOnboardingOverlay: View {
                         isPremium: isPremium,
                         focusRect: store.homeFocusSectionAnchor.flatMap { arrowTargets[$0] },
                         placement: store.calloutPlacement,
-                        showsNext: step != .startFiveLetterDaily,
+                        showsNext: true,
                         isVisible: !store.isStepTransitioning,
                         onNext: onNext,
                         onSkip: onSkip)
@@ -205,6 +248,134 @@ struct HomeOnboardingOverlay: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityAddTraits(store.step == .homePlayFreely ? .isModal : [])
+    }
+}
+
+/// First tour card: two play modes at a glance.
+private struct TwoWaysToPlayCallout: View {
+    var isVisible: Bool
+    var onNext: () -> Void
+    var onSkip: () -> Void
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .top) {
+                if isVisible {
+                    VStack(spacing: 12) {
+                        // Sit in the upper-middle so the card isn't buried under the fold.
+                        Color.clear.frame(height: max(geo.safeAreaInsets.top + 56, geo.size.height * 0.16))
+                        VStack(spacing: 18) {
+                            Text("Step \(OnboardingStep.twoWaysToPlay.stepNumber) of \(OnboardingStep.count)")
+                                .font(.system(.caption2, design: .rounded).weight(.black))
+                                .foregroundColor(Theme.tileText.opacity(0.5))
+                                .frame(maxWidth: .infinity)
+
+                            Text("There are two ways to play Worded")
+                                .font(.system(.title3, design: .rounded).weight(.black))
+                                .foregroundColor(Theme.tileText)
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: .infinity)
+
+                            HStack(alignment: .top, spacing: 12) {
+                                modeLabel(
+                                    title: "Online quickfire games",
+                                    systemImage: "bolt.fill")
+                                modeLabel(
+                                    title: "Solo Daily Challenges",
+                                    systemImage: "calendar")
+                            }
+
+                            Button("Next", action: onNext)
+                                .buttonStyle(PrimaryButtonStyle())
+                        }
+                        .padding(20)
+                        .background(RoundedRectangle(cornerRadius: 16).fill(Theme.panel))
+                        .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
+                        .frame(maxWidth: min(geo.size.width - 32, 360))
+                        Spacer(minLength: 0)
+                    }
+                    .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
+            }
+        }
+        .animation(.easeInOut(duration: 0.3), value: isVisible)
+        .overlay(alignment: .topTrailing) {
+            Button("Skip tour", action: onSkip)
+                .font(.system(.caption, design: .rounded).weight(.bold))
+                .foregroundColor(.white.opacity(0.85))
+                .padding(.top, 12)
+                .padding(.trailing, 16)
+                .opacity(isVisible ? 1 : 0)
+        }
+    }
+
+    private func modeLabel(title: String, systemImage: String) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: systemImage)
+                .font(.system(size: 22, weight: .bold))
+                .foregroundColor(Theme.accentDark)
+            Text(title)
+                .font(.system(.subheadline, design: .rounded).weight(.bold))
+                .foregroundColor(Theme.tileText)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+/// Contextual teach after the first life-consuming online game.
+private struct LivesIntroCallout: View {
+    let focusRect: CGRect?
+    var isVisible: Bool
+    var onDone: () -> Void
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .top) {
+                if isVisible {
+                    VStack(spacing: 12) {
+                        if let focusRect, focusRect.width > 1,
+                           geo.size.height - focusRect.maxY > 200 {
+                            Color.clear.frame(height: focusRect.maxY + 12)
+                            Image(systemName: "arrowtriangle.up.fill")
+                                .font(.system(size: 18))
+                                .foregroundColor(Theme.panel)
+                                .shadow(color: .black.opacity(0.15), radius: 2, y: 1)
+                            calloutCard
+                                .frame(maxWidth: min(geo.size.width - 32, 360))
+                            Spacer(minLength: max(geo.safeAreaInsets.bottom, 16))
+                        } else {
+                            Spacer(minLength: 0)
+                            calloutCard
+                                .frame(maxWidth: min(geo.size.width - 32, 360))
+                                .padding(.bottom, max(geo.safeAreaInsets.bottom, 16) + 8)
+                        }
+                    }
+                    .frame(width: geo.size.width)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                }
+            }
+        }
+        .animation(.easeInOut(duration: 0.3), value: isVisible)
+    }
+
+    private var calloutCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Your Lives")
+                .font(.system(.title3, design: .rounded).weight(.black))
+                .foregroundColor(Theme.tileText)
+            Text("Online games use one life each. You get 5 per day — log in 2 days in a row for +1 bonus life (up to +5 at a 10-day streak). Daily challenges never cost a life. Premium or a Day Pass unlocks unlimited play.")
+                .font(.system(.subheadline, design: .rounded))
+                .foregroundColor(Theme.tileText.opacity(0.75))
+                .fixedSize(horizontal: false, vertical: true)
+            Button("Got it", action: onDone)
+                .buttonStyle(PrimaryButtonStyle())
+        }
+        .padding(18)
+        .background(RoundedRectangle(cornerRadius: 16).fill(Theme.panel))
+        .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
     }
 }
 
@@ -258,13 +429,20 @@ private struct AnchoredOnboardingCallout: View {
                     switch placement {
                     case .pinnedBottom:
                         calloutPinnedBottom(in: geo)
+                    case .belowMidScreen:
+                        calloutBelowMidScreen(in: geo)
                     case .belowFocus:
-                        if let focusRect, focusRect.width > 1 {
+                        if let focusRect, focusRect.width > 1, focusRect.height > 1 {
                             calloutBelowFocus(focusRect: focusRect, in: geo)
+                        } else {
+                            // Anchor can lag a frame after scroll — never leave the step blank.
+                            calloutPinnedBottom(in: geo)
                         }
                     case .aboveFocus:
-                        if let focusRect, focusRect.width > 1 {
+                        if let focusRect, focusRect.width > 1, focusRect.height > 1 {
                             calloutAboveFocus(focusRect: focusRect, in: geo)
+                        } else {
+                            calloutPinnedBottom(in: geo)
                         }
                     }
                 }
@@ -283,31 +461,45 @@ private struct AnchoredOnboardingCallout: View {
     }
 
     @ViewBuilder
-    private func calloutBelowFocus(focusRect: CGRect, in geo: GeometryProxy) -> some View {
-        let spaceBelow = geo.size.height - focusRect.maxY
-        let fitsBelow = spaceBelow > 200
+    private func calloutBelowMidScreen(in geo: GeometryProxy) -> some View {
+        // Flexible on every phone: 65% from top / 35% from bottom.
+        let centerY = geo.size.height * 0.65
+        let cardWidth = min(geo.size.width - 32, 360)
 
-        if fitsBelow {
-            VStack(spacing: gap) {
-                Color.clear.frame(height: focusRect.maxY + gap)
-                Image(systemName: "arrowtriangle.up.fill")
-                    .font(.system(size: 18))
-                    .foregroundColor(Theme.panel)
-                    .shadow(color: .black.opacity(0.15), radius: 2, y: 1)
-                calloutCard
-                    .frame(maxWidth: min(geo.size.width - 32, 360))
-                Spacer(minLength: max(geo.safeAreaInsets.bottom, 16))
-            }
-            .frame(width: geo.size.width)
-        } else {
-            VStack(spacing: 0) {
-                Spacer(minLength: 0)
-                calloutCard
-                    .frame(maxWidth: min(geo.size.width - 32, 360))
-                    .padding(.bottom, max(geo.safeAreaInsets.bottom, 16) + 8)
-            }
-            .frame(width: geo.size.width)
+        VStack(spacing: gap) {
+            Image(systemName: "arrowtriangle.up.fill")
+                .font(.system(size: 18))
+                .foregroundColor(Theme.panel)
+                .shadow(color: .black.opacity(0.15), radius: 2, y: 1)
+            calloutCard
+                .frame(maxWidth: cardWidth)
         }
+        .padding(.horizontal, 16)
+        .position(x: geo.size.width / 2, y: centerY)
+        .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
+    }
+
+    @ViewBuilder
+    private func calloutBelowFocus(focusRect: CGRect, in geo: GeometryProxy) -> some View {
+        // Keep the card tucked under the focused control; clamp so it still fits on-screen.
+        let reservedForCard: CGFloat = 220
+        let maxTop = max(geo.size.height - reservedForCard - max(geo.safeAreaInsets.bottom, 16), 80)
+        let preferredTop = focusRect.maxY > 0 && focusRect.minY < geo.size.height
+            ? focusRect.maxY + gap
+            : geo.size.height * 0.42
+        let topPad = min(preferredTop, maxTop)
+
+        VStack(spacing: gap) {
+            Color.clear.frame(height: topPad)
+            Image(systemName: "arrowtriangle.up.fill")
+                .font(.system(size: 18))
+                .foregroundColor(Theme.panel)
+                .shadow(color: .black.opacity(0.15), radius: 2, y: 1)
+            calloutCard
+                .frame(maxWidth: min(geo.size.width - 32, 360))
+            Spacer(minLength: max(geo.safeAreaInsets.bottom, 16))
+        }
+        .frame(width: geo.size.width, height: geo.size.height, alignment: .top)
     }
 
     @ViewBuilder
@@ -378,8 +570,8 @@ private struct AnchoredOnboardingCallout: View {
                 Text("Tap Reveal Top Words above")
                     .font(.system(.caption, design: .rounded).weight(.black))
                     .foregroundColor(Theme.accentDark)
-            } else if step == .startFiveLetterDaily {
-                Text("Tap the 5-letter daily above")
+            } else if step == .startSixLetterDaily {
+                Text("Tap the 6-letter daily above")
                     .font(.system(.caption, design: .rounded).weight(.black))
                     .foregroundColor(Theme.accentDark)
             }
@@ -391,36 +583,30 @@ private struct AnchoredOnboardingCallout: View {
 
     private var title: String {
         switch step {
-        case .quickMatch: return "Play Online"
-        case .lives: return "Your Lives"
-        case .dailies: return "Daily Challenges"
-        case .inviteFriend: return "Challenge a Friend"
+        case .twoWaysToPlay: return ""
+        case .startSixLetterDaily: return "Let's play your first daily challenge"
         case .dailyLeaderboard: return "Global Leaderboard"
         case .dailyPremiumPitch: return "Top Words & Premium"
-        case .startFiveLetterDaily: return "Let's play your first daily challenge"
+        case .quickMatch: return "Play Online"
+        case .inviteFriend: return "Challenge a Friend"
         case .homePlayFreely: return ""
         }
     }
 
     private var bodyText: String {
         switch step {
-        case .quickMatch:
-            return "Play against another player from around the world in a quickfire best of 7 series."
-        case .lives:
-            if isPremium {
-                return "Each online game costs one life. You start with 5 lives and can unlock more by logging in multiple days in a row, or by becoming a premium member."
-            }
-            return "Free players get 5 games per day. Log in 2 days in a row for +1 bonus life (up to +5 at a 10-day streak). Daily challenges never cost a life. Premium or a Day Pass unlocks unlimited play."
-        case .dailies:
-            return "Complete up to 6 puzzles each day and see how your score stacks up against the rest of the world. This is a four round game where the best scores win!"
-        case .inviteFriend:
-            return "Challenge a friend by username or invite them via text. Your first friend game each day is free — it won't use a life."
+        case .twoWaysToPlay:
+            return ""
+        case .startSixLetterDaily:
+            return "Four rounds of 24 seconds each to build the highest scoring points possible."
         case .dailyLeaderboard:
             return "Check out how you performed against other players around the world."
         case .dailyPremiumPitch:
             return "And if you're dying to know what the correct words were, you can become a premium member to find out the top words for each round in each daily challenge, and access unlimited online games."
-        case .startFiveLetterDaily:
-            return "This will only take 1–2 minutes."
+        case .quickMatch:
+            return "Play against another player from around the world in a quickfire best of 7 series."
+        case .inviteFriend:
+            return "Challenge a friend by username or invite them via text. Your first friend game each day is free — it won't use a life."
         case .homePlayFreely:
             return ""
         }
@@ -448,14 +634,14 @@ struct HomeWelcomeOverlay: View {
                     Text("Step \(OnboardingStep.homePlayFreely.stepNumber) of \(OnboardingStep.count)")
                         .font(.system(.caption2, design: .rounded).weight(.black))
                         .foregroundColor(Theme.tileText.opacity(0.5))
-                    Text("You're all set!")
+                    Text("We're happy you're here!")
                         .font(.system(.title3, design: .rounded).weight(.black))
                         .foregroundColor(Theme.tileText)
-                    Text("Now feel free to play online or complete the daily challenge to compete to be the best!")
+                    Text("Feel free to finish out the daily challenges or play someone online.")
                         .font(.system(.subheadline, design: .rounded))
                         .foregroundColor(Theme.tileText.opacity(0.75))
                         .fixedSize(horizontal: false, vertical: true)
-                    Button("Let's go!", action: onContinue)
+                    Button("Close", action: onContinue)
                         .buttonStyle(PrimaryButtonStyle())
                 }
                 .padding(22)

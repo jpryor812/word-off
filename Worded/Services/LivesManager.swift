@@ -22,6 +22,8 @@ final class LivesManager: ObservableObject {
     @AppStorage("worded.daily.streak.lastDay") private var lastDailyCompletionDay = ""
 
     @Published private(set) var refreshToken = 0   // bumps to trigger view updates
+    /// Set by the most recent `consumeLife` call — true only when a daily life was spent.
+    private(set) var didDeductLifeOnLastConsume = false
 
     private static func dayString(_ date: Date = Date()) -> String {
         let formatter = DateFormatter()
@@ -136,6 +138,7 @@ final class LivesManager: ObservableObject {
     /// Premium players should bypass this entirely.
     func consumeLife(isFriendGame: Bool = false) -> Bool {
         rollDayIfNeeded()
+        didDeductLifeOnLastConsume = false
         if isFriendGame && !friendGameUsedToday {
             friendGameUsedToday = true
             refreshToken += 1
@@ -143,6 +146,7 @@ final class LivesManager: ObservableObject {
         }
         guard livesRemaining > 0 else { return false }
         livesUsedToday += 1
+        didDeductLifeOnLastConsume = true
         refreshToken += 1
         return true
     }

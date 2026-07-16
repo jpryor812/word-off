@@ -71,10 +71,10 @@ struct DailyHubView: View {
         .contentShape(Rectangle())
         .onTapGesture { tapDaily(size: size) }
 
-        if size == 5 {
+        if size == OnboardingStore.onboardingDailyRackSize {
             row
-                .id("onboarding.fiveLetterDaily")
-                .onboardingAnchor(.fiveLetterDaily)
+                .id("onboarding.sixLetterDaily")
+                .onboardingAnchor(.sixLetterDaily)
                 .onboardingDimmed(
                     app.onboardingStore.isDailyRowDimmed(rackSize: size),
                     focusRing: app.onboardingStore.isDailyRowFocused(rackSize: size),
@@ -145,9 +145,9 @@ struct DailyHubView: View {
     }
 
     private func tapDaily(size: Int) {
-        if app.onboardingStore.step == .startFiveLetterDaily {
-            guard size == 5 else { return }
-            app.onboardingStore.beganFiveLetterDaily()
+        if app.onboardingStore.step == .startSixLetterDaily {
+            guard size == OnboardingStore.onboardingDailyRackSize else { return }
+            app.onboardingStore.beganOnboardingDaily()
         }
         if let played = app.dailyStore.result(day: today, rackSize: size) {
             detailResult = played
@@ -514,7 +514,8 @@ struct DailyPlayView: View {
             if newPhase == .finished { finishPuzzle() }
         }
         .onChange(of: app.onboardingStore.step) { _, step in
-            if step == .homePlayFreely {
+            // After the premium pitch, tour resumes on Home with Play Online.
+            if step == .quickMatch {
                 dismiss()
             }
         }

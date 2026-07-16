@@ -23,6 +23,9 @@ struct HomeView: View {
                             livesBar
                                 .id("onboarding.lives")
                                 .homeOnboardingSection(app.onboardingStore, section: .lives)
+                                .scaleEffect(app.onboardingStore.isLivesIntroZoomed ? 1.14 : 1)
+                                .animation(.spring(response: 0.4, dampingFraction: 0.82), value: app.onboardingStore.isLivesIntroZoomed)
+                                .zIndex(app.onboardingStore.isLivesIntroActive ? 2 : 0)
                             playCard
                                 .id("onboarding.playOnline")
                                 .homeOnboardingSection(app.onboardingStore, section: .quickMatch)
@@ -31,18 +34,32 @@ struct HomeView: View {
                                 .homeOnboardingSection(
                                     app.onboardingStore,
                                     section: .dailyHub,
-                                    focusRing: app.onboardingStore.step != .startFiveLetterDaily)
+                                    focusRing: app.onboardingStore.step != .startSixLetterDaily)
                             statsCard
                                 .homeOnboardingSection(app.onboardingStore, section: .stats, focusRing: false)
                         }
                         .padding(16)
                     }
                     .onChange(of: app.onboardingStore.step) { _, _ in
-                        guard app.onboardingStore.isActive,
-                              app.onboardingStore.scrollTargetID != nil else { return }
-                        OnboardingScroll.scrollToStep(
-                            store: app.onboardingStore,
-                            proxy: proxy)
+                        guard app.onboardingStore.isActive else { return }
+                        if app.onboardingStore.scrollTargetID != nil {
+                            OnboardingScroll.scrollToStep(
+                                store: app.onboardingStore,
+                                proxy: proxy)
+                        } else if app.onboardingStore.isStepTransitioning {
+                            // First overview card: no scroll — just reveal after a short beat.
+                            Task { @MainActor in
+                                try? await Task.sleep(for: .milliseconds(280))
+                                app.onboardingStore.finishStepTransition()
+                            }
+                        }
+                    }
+                    .onChange(of: app.onboardingStore.livesIntroPhase) { _, phase in
+                        if phase == .zoomingIn {
+                            withAnimation(.easeInOut(duration: 0.35)) {
+                                proxy.scrollTo("onboarding.lives", anchor: .center)
+                            }
+                        }
                     }
                 }
             }
@@ -51,7 +68,8 @@ struct HomeView: View {
                 store: app.onboardingStore,
                 isPremium: app.entitlements.isPremium,
                 onNext: { app.onboardingStore.advance() },
-                onSkip: { app.onboardingStore.skip() })
+                onSkip: { app.onboardingStore.skip() },
+                onLivesIntroDone: { app.onboardingStore.completeLivesIntro() })
             .navigationBarHidden(true)
             .fullScreenCover(item: $app.onlineMatchToStart) { config in
                 MatchView(onlineMatch: config, challengeService: app.challengeService)
@@ -59,9 +77,10 @@ struct HomeView: View {
                     .onDisappear {
                         app.finishOnlineMatch()
                         challengingUsername = nil
+                        presentLivesIntroIfNeeded()
                     }
             }
-            .fullScreenCover(isPresented: $showMatch) {
+            .fullScreenCover(isPresented: $showMatch, onDismiss: presentLivesIntroIfNeeded) {
                 MatchView(aiAfterMatchmakingTimeout: aiAfterMatchmakingTimeout)
                     .environmentObject(app)
             }
@@ -106,6 +125,7 @@ struct HomeView: View {
             }
             .onAppear {
                 app.onboardingStore.startIfNeeded()
+                presentLivesIntroIfNeeded()
                 #if DEBUG
                 if ProcessInfo.processInfo.arguments.contains("-demo-match") {
                     showMatch = true
@@ -114,6 +134,9 @@ struct HomeView: View {
                     showPaywall = true
                 }
                 #endif
+            }
+            .onChange(of: app.onboardingStore.isActive) { _, active in
+                if !active { presentLivesIntroIfNeeded() }
             }
             .onChange(of: app.challengeService.outgoingChallenge) { _, _ in
                 app.handleOutgoingChallengeUpdate()
@@ -147,6 +170,12 @@ struct HomeView: View {
         }
     }
 
+    private func presentLivesIntroIfNeeded() {
+        app.onboardingStore.tryStartLivesIntro(
+            livesRemaining: app.lives.livesRemaining,
+            totalLives: app.lives.totalLivesToday)
+    }
+
     private func sendChallenge(to username: String, fromOnboarding: Bool = false) async {
         challengeError = nil
         let canPlay = app.entitlements.isPremium
@@ -161,6 +190,7 @@ struct HomeView: View {
             try await app.sendFriendChallenge(to: username)
             if !app.entitlements.isPremium {
                 _ = app.lives.consumeLife(isFriendGame: true)
+                app.noteLifeDeductionIfNeeded()
             }
             showFriendSheet = false
             if fromOnboarding {
@@ -203,13 +233,7 @@ struct HomeView: View {
                         .font(.system(.subheadline, design: .rounded).weight(.bold))
                         .foregroundColor(Theme.tileText)
                 } else {
-                    HStack(spacing: 4) {
-                        ForEach(0..<app.lives.totalLivesToday, id: \.self) { index in
-                            Image(systemName: index < app.lives.livesRemaining ? "heart.fill" : "heart")
-                                .foregroundColor(Theme.lose)
-                                .font(.subheadline)
-                        }
-                    }
+                    livesHeartsRow
                 }
                 Spacer()
             }
@@ -220,6 +244,30 @@ struct HomeView: View {
         }
         .panel()
         .onboardingAnchor(.livesCard)
+    }
+
+    private var livesHeartsRow: some View {
+        let filledCount: Int = {
+            if app.onboardingStore.isLivesIntroActive {
+                return app.onboardingStore.livesIntroVisualFilled
+            }
+            return app.lives.livesRemaining
+        }()
+        let popping = app.onboardingStore.livesIntroPoppingIndex
+
+        return HStack(spacing: 4) {
+            ForEach(0..<app.lives.totalLivesToday, id: \.self) { index in
+                let isFilled = index < filledCount
+                let isPopping = popping == index
+                Image(systemName: isFilled || isPopping ? "heart.fill" : "heart")
+                    .foregroundColor(Theme.lose)
+                    .font(app.onboardingStore.isLivesIntroZoomed ? .title3 : .subheadline)
+                    .scaleEffect(isPopping ? 0.15 : 1)
+                    .opacity(isPopping ? 0 : 1)
+                    .animation(.spring(response: 0.32, dampingFraction: 0.55), value: isPopping)
+                    .animation(.easeInOut(duration: 0.25), value: app.onboardingStore.isLivesIntroZoomed)
+            }
+        }
     }
 
     private var loginStreakTracker: some View {

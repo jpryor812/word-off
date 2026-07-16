@@ -536,6 +536,9 @@ struct MatchView: View {
         // Rematch costs a life for free users (both players must accept in
         // online play; vs AI it always accepts).
         if app.entitlements.isPremium || app.lives.consumeLife() {
+            if !app.entitlements.isPremium {
+                app.noteLifeDeductionIfNeeded()
+            }
             badgeSnapshot = app.badgeStore.currentTracks(
                 loginStreak: app.lives.loginStreak,
                 dailyStreak: app.lives.dailyCompletionStreak,

@@ -2,14 +2,16 @@ import Foundation
 import SwiftUI
 
 enum OnboardingStep: Int, CaseIterable {
-    case quickMatch = 0
-    case lives = 1
-    case dailies = 2
-    case inviteFriend = 3
-    case startFiveLetterDaily = 4
-    case dailyLeaderboard = 5
-    case dailyPremiumPitch = 6
-    case homePlayFreely = 7
+    /// Home: two modes overview → jump into a daily.
+    case twoWaysToPlay = 0
+    case startSixLetterDaily = 1
+    /// Daily results screen.
+    case dailyLeaderboard = 2
+    case dailyPremiumPitch = 3
+    /// Back on Home after the first daily.
+    case quickMatch = 4
+    case inviteFriend = 5
+    case homePlayFreely = 6
 
     var stepNumber: Int { rawValue + 1 }
     static var count: Int { allCases.count }
@@ -21,7 +23,7 @@ enum HomeOnboardingAnchor: Hashable {
     case dailyHubCard
     case playOnline
     case challengeFriend
-    case fiveLetterDaily
+    case sixLetterDaily
 }
 
 enum HomeOnboardingFocus: Hashable {
@@ -57,28 +59,85 @@ enum OnboardingCalloutPlacement {
     case aboveFocus
     case belowFocus
     case pinnedBottom
+    /// Callout centered at 65% from top / 35% from bottom.
+    case belowMidScreen
+}
+
+enum LivesIntroPhase: Equatable {
+    case idle
+    case pending
+    case zoomingIn
+    case poppingHeart
+    case zoomingOut
+    case showingCallout
 }
 
 /// Versioned first-run tour over the real Home screen.
 @MainActor
 final class OnboardingStore: ObservableObject {
-    static let currentVersion = 3
+    static let currentVersion = 6
     /// Set to `false` before shipping — when true, onboarding runs every Home launch and never saves completion.
     static let repeatEveryLaunchForTesting = true
     private static let completedKey = "worded.onboarding.completedVersion"
+    private static let livesIntroCompletedKey = "worded.onboarding.livesIntroCompleted"
+    private static let welcomeIntroCompletedKey = "worded.onboarding.welcomeIntroCompleted"
 
     @Published private(set) var step: OnboardingStep?
     @Published private(set) var isActive = false
     @Published private(set) var awaitingDailyResultsOnboarding = false
     @Published private(set) var isStepTransitioning = false
+    /// True while the auth → home entrance animation is playing; delays the spotlight tour.
+    @Published private(set) var isDeferringTourForHomeEntrance = false
+
+    /// Contextual lives teach after the first life-consuming online game.
+    @Published private(set) var livesIntroPhase: LivesIntroPhase = .idle
+    /// Heart count shown during the intro animation (may briefly exceed livesRemaining).
+    @Published private(set) var livesIntroVisualFilled: Int = 0
+    /// Index of the heart currently popping away, if any.
+    @Published private(set) var livesIntroPoppingIndex: Int? = nil
 
     static let stepTransitionDelayMs = 450
     /// Pause on the results screen before dimming and scrolling to the leaderboard step.
     static let dailyResultsRevealDelayMs = 1000
 
+    private var livesIntroTask: Task<Void, Never>?
+
     var shouldShow: Bool {
         if Self.repeatEveryLaunchForTesting { return true }
         return UserDefaults.standard.integer(forKey: Self.completedKey) < Self.currentVersion
+    }
+
+    /// First-open tile animation, before sign-in. Shown once per install.
+    var needsWelcomeIntro: Bool {
+        !UserDefaults.standard.bool(forKey: Self.welcomeIntroCompletedKey)
+    }
+
+    func completeWelcomeIntro() {
+        UserDefaults.standard.set(true, forKey: Self.welcomeIntroCompletedKey)
+        objectWillChange.send()
+    }
+
+    /// Call at bootstrap so existing players who already finished onboarding skip the welcome.
+    func migrateWelcomeIntroIfNeeded() {
+        guard !UserDefaults.standard.bool(forKey: Self.welcomeIntroCompletedKey) else { return }
+        guard UserDefaults.standard.integer(forKey: Self.completedKey) > 0 else { return }
+        UserDefaults.standard.set(true, forKey: Self.welcomeIntroCompletedKey)
+    }
+
+    var hasCompletedLivesIntro: Bool {
+        if Self.repeatEveryLaunchForTesting { return false }
+        return UserDefaults.standard.bool(forKey: Self.livesIntroCompletedKey)
+    }
+
+    var isLivesIntroActive: Bool {
+        switch livesIntroPhase {
+        case .idle, .pending: return false
+        case .zoomingIn, .poppingHeart, .zoomingOut, .showingCallout: return true
+        }
+    }
+
+    var isLivesIntroZoomed: Bool {
+        livesIntroPhase == .zoomingIn || livesIntroPhase == .poppingHeart
     }
 
     var isInDailyResultsOnboarding: Bool {
@@ -90,27 +149,49 @@ final class OnboardingStore: ObservableObject {
     }
 
     func isHomeSectionFocused(_ section: HomeOnboardingFocus) -> Bool {
+        if isLivesIntroActive { return section == .lives }
         guard let step else { return true }
         switch (step, section) {
+        case (.twoWaysToPlay, .quickMatch), (.twoWaysToPlay, .dailyHub): return true
         case (.quickMatch, .quickMatch), (.inviteFriend, .quickMatch): return true
-        case (.lives, .lives): return true
-        case (.dailies, .dailyHub), (.startFiveLetterDaily, .dailyHub): return true
+        case (.startSixLetterDaily, .dailyHub): return true
         default: return false
         }
     }
 
+    func isHomeSectionFocusRing(_ section: HomeOnboardingFocus) -> Bool {
+        guard isHomeSectionFocused(section) else { return false }
+        // Overview card highlights both play modes without orange rings.
+        if step == .twoWaysToPlay { return false }
+        return true
+    }
+
     func isHomeSectionDimmed(_ section: HomeOnboardingFocus) -> Bool {
+        if isLivesIntroActive { return section != .lives }
         guard isOnHomeTour, !isStepTransitioning else { return false }
         return !isHomeSectionFocused(section)
     }
 
+    func beginDeferredHomeEntrance() {
+        isDeferringTourForHomeEntrance = true
+    }
+
+    func finishDeferredHomeEntrance() {
+        guard isDeferringTourForHomeEntrance else { return }
+        isDeferringTourForHomeEntrance = false
+        startIfNeeded()
+    }
+
+    /// Rack size the forced first-daily step asks the player to start.
+    static let onboardingDailyRackSize = 6
+
     func isDailyRowDimmed(rackSize: Int) -> Bool {
-        guard step == .startFiveLetterDaily, !isStepTransitioning else { return false }
-        return rackSize != 5
+        guard step == .startSixLetterDaily, !isStepTransitioning else { return false }
+        return rackSize != Self.onboardingDailyRackSize
     }
 
     func isDailyRowFocused(rackSize: Int) -> Bool {
-        step == .startFiveLetterDaily && rackSize == 5
+        step == .startSixLetterDaily && rackSize == Self.onboardingDailyRackSize
     }
 
     func isDailyResultDimmed(_ section: DailyResultOnboardingFocus) -> Bool {
@@ -123,11 +204,10 @@ final class OnboardingStore: ObservableObject {
     }
 
     var homeFocusSectionAnchor: HomeOnboardingAnchor? {
+        if isLivesIntroActive { return .livesCard }
         switch step {
         case .quickMatch, .inviteFriend: return .quickMatchCard
-        case .lives: return .livesCard
-        case .dailies: return .dailyHubCard
-        case .startFiveLetterDaily: return .fiveLetterDaily
+        case .startSixLetterDaily: return .sixLetterDaily
         default: return nil
         }
     }
@@ -137,7 +217,7 @@ final class OnboardingStore: ObservableObject {
         switch step {
         case .quickMatch: return .playOnline
         case .inviteFriend: return .challengeFriend
-        case .startFiveLetterDaily: return .fiveLetterDaily
+        case .startSixLetterDaily: return .sixLetterDaily
         default: return nil
         }
     }
@@ -160,6 +240,8 @@ final class OnboardingStore: ObservableObject {
 
     func resetForDebug() {
         UserDefaults.standard.removeObject(forKey: Self.completedKey)
+        UserDefaults.standard.removeObject(forKey: Self.livesIntroCompletedKey)
+        UserDefaults.standard.removeObject(forKey: Self.welcomeIntroCompletedKey)
     }
 
     func startIfNeeded() {
@@ -168,20 +250,89 @@ final class OnboardingStore: ObservableObject {
             resetForDebug()
         }
         #endif
+        guard !isDeferringTourForHomeEntrance else { return }
         guard shouldShow, !isActive else { return }
         isActive = true
+        // Hide callout/dimming for one beat so the first step doesn't flash
+        // before Home finishes its initial scroll/layout.
+        beginStepTransition()
         if Self.repeatEveryLaunchForTesting {
-            step = .quickMatch
+            step = .twoWaysToPlay
             return
         }
         let completed = UserDefaults.standard.integer(forKey: Self.completedKey)
-        step = completed < Self.currentVersion ? .quickMatch : nil
-        if step == nil { isActive = false }
+        step = completed < Self.currentVersion ? .twoWaysToPlay : nil
+        if step == nil {
+            isStepTransitioning = false
+            isActive = false
+        }
     }
 
-    /// User tapped the 5-letter daily row during the forced-start step.
-    func beganFiveLetterDaily() {
-        guard step == .startFiveLetterDaily else { return }
+    /// Call when a daily life was actually deducted for an online/PvP game.
+    func scheduleLivesIntro() {
+        guard !hasCompletedLivesIntro else { return }
+        guard livesIntroPhase == .idle else { return }
+        livesIntroPhase = .pending
+    }
+
+    /// Starts the zoom → pop → explain sequence when Home is free.
+    func tryStartLivesIntro(livesRemaining: Int, totalLives: Int) {
+        guard livesIntroPhase == .pending else { return }
+        guard !isActive else { return }
+        guard totalLives > 0 else {
+            completeLivesIntro()
+            return
+        }
+
+        livesIntroTask?.cancel()
+        let visualFilled = min(max(livesRemaining + 1, 1), totalLives)
+        livesIntroVisualFilled = visualFilled
+        livesIntroPoppingIndex = nil
+        livesIntroPhase = .zoomingIn
+
+        livesIntroTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(450))
+            guard !Task.isCancelled, livesIntroPhase == .zoomingIn else { return }
+
+            let popIndex = max(visualFilled - 1, 0)
+            livesIntroPoppingIndex = popIndex
+            livesIntroPhase = .poppingHeart
+
+            try? await Task.sleep(for: .milliseconds(380))
+            guard !Task.isCancelled else { return }
+
+            withAnimation(.easeOut(duration: 0.2)) {
+                livesIntroVisualFilled = livesRemaining
+                livesIntroPoppingIndex = nil
+            }
+
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else { return }
+            livesIntroPhase = .zoomingOut
+
+            try? await Task.sleep(for: .milliseconds(350))
+            guard !Task.isCancelled else { return }
+
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else { return }
+            livesIntroPhase = .showingCallout
+        }
+    }
+
+    func completeLivesIntro() {
+        livesIntroTask?.cancel()
+        livesIntroTask = nil
+        if !Self.repeatEveryLaunchForTesting {
+            UserDefaults.standard.set(true, forKey: Self.livesIntroCompletedKey)
+        }
+        livesIntroPhase = .idle
+        livesIntroVisualFilled = 0
+        livesIntroPoppingIndex = nil
+    }
+
+    /// User tapped the onboarding daily row during the forced-start step.
+    func beganOnboardingDaily() {
+        guard step == .startSixLetterDaily else { return }
         awaitingDailyResultsOnboarding = true
         step = nil
     }
@@ -196,15 +347,23 @@ final class OnboardingStore: ObservableObject {
     func advance() {
         guard let current = step else { return }
         switch current {
+        case .twoWaysToPlay:
+            beginStepTransition()
+            step = .startSixLetterDaily
         case .dailyLeaderboard:
             step = .dailyPremiumPitch
         case .dailyPremiumPitch:
             break
+        case .quickMatch:
+            beginStepTransition()
+            step = .inviteFriend
+        case .inviteFriend:
+            beginStepTransition()
+            step = .homePlayFreely
         case .homePlayFreely:
             complete()
-        default:
-            guard let next = OnboardingStep(rawValue: current.rawValue + 1) else { return }
-            step = next
+        case .startSixLetterDaily:
+            break
         }
     }
 
@@ -212,7 +371,8 @@ final class OnboardingStore: ObservableObject {
     func finishDailyOnboardingAndReturnHome() {
         guard step == .dailyPremiumPitch else { return }
         awaitingDailyResultsOnboarding = false
-        step = .homePlayFreely
+        beginStepTransition()
+        step = .quickMatch
     }
 
     func skip() {
@@ -237,35 +397,36 @@ final class OnboardingStore: ObservableObject {
 
     var scrollTargetID: String? {
         switch step {
-        case .quickMatch: return "onboarding.playOnline"
-        case .lives: return "onboarding.lives"
-        case .dailies: return "onboarding.dailies"
-        case .inviteFriend: return "onboarding.playOnline"
-        case .startFiveLetterDaily: return "onboarding.fiveLetterDaily"
+        case .twoWaysToPlay: return nil
+        case .startSixLetterDaily: return "onboarding.sixLetterDaily"
         case .dailyLeaderboard: return "onboarding.dailyLeaderboard"
         case .dailyPremiumPitch: return "onboarding.revealTopWords"
+        case .quickMatch: return "onboarding.playOnline"
+        case .inviteFriend: return "onboarding.playOnline"
         case .homePlayFreely, nil: return nil
         }
     }
 
     var scrollAnchor: UnitPoint {
         switch step {
-        case .dailies, .dailyLeaderboard: return .bottom
-        case .startFiveLetterDaily: return .top
+        case .dailyLeaderboard: return .bottom
+        case .startSixLetterDaily: return .top
         default: return .top
         }
     }
 
     var calloutPlacement: OnboardingCalloutPlacement {
         switch step {
-        case .dailies, .startFiveLetterDaily: return .pinnedBottom
+        case .twoWaysToPlay: return .pinnedBottom
+        case .startSixLetterDaily: return .belowMidScreen
         case .dailyLeaderboard: return .aboveFocus
         default: return .belowFocus
         }
     }
 
     var blocksHomeInteraction: Bool {
+        if isLivesIntroActive { return true }
         guard let step else { return false }
-        return step != .startFiveLetterDaily
+        return step != .startSixLetterDaily
     }
 }

@@ -57,6 +57,7 @@ final class AppState: ObservableObject {
             loginStreak: lives.loginStreak,
             dailyStreak: lives.dailyCompletionStreak)
         await entitlements.refresh()
+        onboardingStore.migrateWelcomeIntroIfNeeded()
 
         if isLocalMode {
             // Local mode: a stored username acts as the "account".
@@ -128,7 +129,10 @@ final class AppState: ObservableObject {
         matchmakingFellBackToAI = false
 
         if isLocalMode || session == nil {
-            if !entitlements.isPremium { _ = lives.consumeLife() }
+            if !entitlements.isPremium {
+                _ = lives.consumeLife()
+                noteLifeDeductionIfNeeded()
+            }
             return .ai
         }
 
@@ -136,22 +140,37 @@ final class AppState: ObservableObject {
         defer { isMatchmaking = false }
 
         guard let userId = session?.userId else {
-            if !entitlements.isPremium { _ = lives.consumeLife() }
+            if !entitlements.isPremium {
+                _ = lives.consumeLife()
+                noteLifeDeductionIfNeeded()
+            }
             return .ai
         }
 
         let result = await matchmakingService.searchForMatch(myUserId: userId)
         switch result {
         case .matched(let config):
-            if !entitlements.isPremium { _ = lives.consumeLife() }
+            if !entitlements.isPremium {
+                _ = lives.consumeLife()
+                noteLifeDeductionIfNeeded()
+            }
             return .online(config)
         case .aiFallback:
             matchmakingFellBackToAI = true
-            if !entitlements.isPremium { _ = lives.consumeLife() }
+            if !entitlements.isPremium {
+                _ = lives.consumeLife()
+                noteLifeDeductionIfNeeded()
+            }
             return .ai
         case .cancelled:
             return .cancelled
         }
+    }
+
+    /// Queues the contextual lives teach when a daily life was just spent.
+    func noteLifeDeductionIfNeeded() {
+        guard lives.didDeductLifeOnLastConsume else { return }
+        onboardingStore.scheduleLivesIntro()
     }
 
     func cancelQuickMatchSearch() {
@@ -183,6 +202,7 @@ final class AppState: ObservableObject {
             challengeService.clearAcceptedOutgoing()
             if !entitlements.isPremium {
                 _ = lives.consumeLife(isFriendGame: true)
+                noteLifeDeductionIfNeeded()
             }
         } catch {
             challengeStatusMessage = error.localizedDescription
