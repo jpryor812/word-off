@@ -22,6 +22,8 @@ struct DailyHubView: View {
             ForEach(GameConstants.dailyRackCounts, id: \.self) { size in
                 dailyRow(size: size)
             }
+
+            ladderRow
         }
         .panel()
         .onboardingAnchor(.dailyHubCard)
@@ -111,9 +113,8 @@ struct DailyHubView: View {
         }
     }
 
-    /// Trailing control: a chevron before playing, or a "Reveal Top Words"
-    /// button once the puzzle is complete (locked for free players until the
-    /// next day, where tapping offers Premium instead).
+    /// Trailing control: a chevron before playing, or orange "Reveal Top Words"
+    /// once complete (lock when gated; tap opens paywall until unlocked).
     @ViewBuilder
     private func trailing(played: DailyPuzzleResult?) -> some View {
         if let played {
@@ -126,21 +127,73 @@ struct DailyHubView: View {
                 }
             } label: {
                 HStack(spacing: 5) {
-                    Image(systemName: unlocked ? "trophy.fill" : "lock.fill")
-                    Text(unlocked ? "Reveal Top Words" : "Top Words Tomorrow")
+                    if !unlocked {
+                        Image(systemName: "lock.fill")
+                    }
+                    Text("Reveal Top Words")
                 }
                 .font(.system(.caption, design: .rounded).weight(.bold))
-                .foregroundColor(unlocked ? Theme.accentDark : Theme.tileText.opacity(0.5))
+                .foregroundColor(.white)
                 .padding(.vertical, 6)
                 .padding(.horizontal, 10)
-                .background(
-                    Capsule().fill(unlocked ? Theme.accent.opacity(0.18) : Color.black.opacity(0.05))
-                )
+                .background(Capsule().fill(Theme.accent))
             }
             .buttonStyle(.plain)
         } else {
             Image(systemName: "chevron.right")
                 .foregroundColor(Theme.tileText.opacity(0.4))
+        }
+    }
+
+    private var ladderRow: some View {
+        let size = GameConstants.ladderDailySentinel
+        let played = app.dailyStore.result(day: today, rackSize: size)
+        let done = played != nil
+        return HStack {
+            ladderBadge(done: done)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("The Ladder")
+                    .font(.system(.subheadline, design: .rounded).weight(.bold))
+                    .foregroundColor(Theme.tileText)
+                Text(
+                    done
+                        ? "Done — \(played!.totalScore) pts · tap for results"
+                        : "One game. All sets of letters."
+                )
+                    .font(.system(.caption, design: .rounded))
+                    .foregroundColor(Theme.tileText.opacity(0.6))
+            }
+            Spacer()
+            trailing(played: played)
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.white.opacity(0.5)))
+        .contentShape(Rectangle())
+        .onTapGesture { tapDaily(size: size) }
+        .onboardingDimmed(
+            app.onboardingStore.isActive && app.onboardingStore.step == .startSixLetterDaily,
+            focusRing: false,
+            cornerRadius: 12)
+    }
+
+    private func ladderBadge(done: Bool) -> some View {
+        ZStack(alignment: .topTrailing) {
+            Text("5–10")
+                .font(.system(size: 11, weight: .black, design: .rounded))
+                .foregroundColor(Theme.tileText)
+                .frame(width: 40, height: 40)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Theme.tileFace))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(done ? Theme.win : Theme.tileEdge, lineWidth: done ? 2.5 : 1.5)
+                )
+            if done {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 16))
+                    .foregroundColor(Theme.win)
+                    .background(Circle().fill(.white).frame(width: 14, height: 14))
+                    .offset(x: 6, y: -6)
+            }
         }
     }
 
@@ -219,15 +272,14 @@ struct DailyResultDetailView: View {
             .coordinateSpace(name: DailyResultOnboardingCoordinateSpace.name)
             .dailyResultOnboardingSpotlight(
                 store: app.onboardingStore,
-                onNext: { app.onboardingStore.advance() },
-                onSkip: { app.onboardingStore.skip() })
+                onNext: { app.onboardingStore.advance() })
             .sheet(isPresented: $showTopWords, onDismiss: handlePremiumOnboardingDismiss) {
                 DailyTopWordsView(result: result).environmentObject(app)
             }
             .sheet(isPresented: $showPaywall, onDismiss: handlePremiumOnboardingDismiss) {
                 PaywallView().environmentObject(app)
             }
-            .navigationTitle("\(result.rackSize)-Letter Daily")
+            .navigationTitle(result.displayTitle)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -303,13 +355,17 @@ struct DailyResultDetailView: View {
     @ViewBuilder
     private var revealButton: some View {
         let unlocked = result.topWordsUnlocked(isPremium: app.entitlements.isPremium)
-        let onboardingPitch = app.onboardingStore.step == .dailyPremiumPitch
         Button {
             handleRevealTopWordsTap(unlocked: unlocked)
         } label: {
-            Label("Reveal Top Words", systemImage: unlocked ? "trophy.fill" : "lock.fill")
+            HStack(spacing: 8) {
+                if !unlocked {
+                    Image(systemName: "lock.fill")
+                }
+                Text("Reveal Top Words")
+            }
         }
-        .buttonStyle(PrimaryButtonStyle(color: unlocked && !onboardingPitch ? Theme.accent : Theme.backgroundLight))
+        .buttonStyle(PrimaryButtonStyle(color: Theme.accent))
         .disabled(app.onboardingStore.step == .dailyLeaderboard)
         .id("onboarding.revealTopWords")
         .dailyResultOnboardingAnchor(.revealTopWords)
@@ -343,8 +399,10 @@ struct DailyResultDetailView: View {
                 .font(.system(.caption, design: .rounded).weight(.black))
                 .foregroundColor(Theme.tileText.opacity(0.5))
             ForEach(Array(result.roundScores.enumerated()), id: \.offset) { index, score in
+                let sizeLabel = GameConstants.dailyRoundRackSize(
+                    puzzleRackSize: result.rackSize, roundIndex: index)
                 HStack {
-                    Text("Rack \(index + 1)")
+                    Text(result.isLadder ? "\(sizeLabel)‑let" : "Rack \(index + 1)")
                         .font(.system(.caption, design: .rounded).weight(.bold))
                         .foregroundColor(Theme.tileText.opacity(0.5))
                         .frame(width: 56, alignment: .leading)
@@ -567,11 +625,15 @@ struct DailyPlayView: View {
         return VStack(spacing: 16) {
             HStack(spacing: 10) {
                 ExitGameButton { showExitConfirm = true }
-                Text("\(engine.rackSize)-LETTER DAILY")
+                Text(engine.isLadder ? "THE LADDER" : "\(engine.rackSize)-LETTER DAILY")
                     .font(.system(.headline, design: .rounded).weight(.black))
                     .foregroundColor(.white)
                 Spacer()
-                Text("Rack \(engine.rackIndex + 1)/\(GameConstants.dailyRoundsPerPuzzle)")
+                Text(
+                    engine.isLadder
+                        ? "\(engine.currentRoundLetterCount) letters · \(engine.rackIndex + 1)/\(engine.totalRounds)"
+                        : "Rack \(engine.rackIndex + 1)/\(engine.totalRounds)"
+                )
                     .font(.system(.subheadline, design: .rounded).weight(.bold))
                     .foregroundColor(Theme.subtleText)
             }
@@ -699,6 +761,7 @@ struct DailyPlayView: View {
         app.dailyStore.save(result)
         app.lives.recordDailyCompletion(day: engine.day)
         app.statsStore.recordDailyWords(scores: engine.roundScores)
+        Task { await app.refreshDailyReminderNotification() }
         let day = engine.day
         let rackSize = engine.rackSize
         let words = result.words
@@ -713,7 +776,7 @@ struct DailyPlayView: View {
                 roundScores: roundScores,
                 rank: standing?.rank,
                 total: standing?.total,
-                completedSizesToday: app.dailyStore.completedCount(day: day))
+                completedSizesToday: app.dailyStore.completedStandardCount(day: day))
             app.badgeStore.refreshStreakBadges(
                 loginStreak: app.lives.loginStreak,
                 dailyStreak: app.lives.dailyCompletionStreak)
@@ -776,7 +839,7 @@ struct DailyTopWordsView: View {
 
     private var headerCard: some View {
         VStack(spacing: 6) {
-            Text("\(result.rackSize)-LETTER DAILY · \(result.date)")
+            Text("\(result.displayTitle.uppercased()) · \(result.date)")
                 .font(.system(.caption, design: .rounded).weight(.black))
                 .foregroundColor(Theme.tileText.opacity(0.5))
             Text("Best possible plays")
@@ -799,7 +862,11 @@ struct DailyTopWordsView: View {
 
         return VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("RACK \(solution.id + 1)")
+                Text(
+                    result.isLadder
+                        ? "RACK \(solution.id + 1) · \(solution.rack.count) LETTERS"
+                        : "RACK \(solution.id + 1)"
+                )
                     .font(.system(.caption, design: .rounded).weight(.black))
                     .foregroundColor(Theme.tileText.opacity(0.5))
                 Spacer()

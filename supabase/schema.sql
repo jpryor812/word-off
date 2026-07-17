@@ -30,7 +30,7 @@ create policy "users update own profile"
 create table if not exists public.daily_scores (
   user_id uuid not null references public.profiles (id) on delete cascade,
   day date not null,
-  rack_size int not null check (rack_size between 5 and 10),
+  rack_size int not null check (rack_size = 0 or rack_size between 5 and 10),
   score int not null check (score >= 0),
   best_word text,
   best_word_score int,
@@ -99,6 +99,23 @@ create policy "users manage own queue entry"
 create index if not exists matchmaking_queue_waiting_fifo
   on public.matchmaking_queue (enqueued_at asc)
   where status = 'waiting';
+
+create or replace function public.matchmaking_someone_waiting()
+returns boolean
+language sql
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.matchmaking_queue
+    where status = 'waiting'
+      and user_id is distinct from auth.uid()
+      and enqueued_at >= now() - interval '20 seconds'
+  );
+$$;
+
+grant execute on function public.matchmaking_someone_waiting() to authenticated;
 
 create table if not exists public.matches (
   id uuid primary key default gen_random_uuid(),
@@ -183,3 +200,46 @@ create policy "participants insert matches"
 create policy "participants update matches"
   on public.matches for update
   using (auth.uid() = player_a or auth.uid() = player_b);
+
+-- =========================================================================
+-- Account deletion (App Store 5.1.1(v))
+-- =========================================================================
+create or replace function public.delete_own_account()
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  uid uuid := auth.uid();
+begin
+  if uid is null then
+    raise exception 'Not authenticated';
+  end if;
+
+  delete from public.matchmaking_queue where user_id = uid;
+
+  delete from public.match_submissions
+  where user_id = uid
+     or match_id in (
+       select id from public.matches
+       where player_a = uid or player_b = uid
+     );
+
+  update public.match_challenges
+  set match_id = null
+  where match_id in (
+    select id from public.matches
+    where player_a = uid or player_b = uid
+  );
+
+  delete from public.matches
+  where player_a = uid or player_b = uid;
+
+  delete from public.profiles where id = uid;
+  delete from auth.users where id = uid;
+end;
+$$;
+
+revoke all on function public.delete_own_account() from public;
+grant execute on function public.delete_own_account() to authenticated;

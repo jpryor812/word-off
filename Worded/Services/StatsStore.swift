@@ -114,6 +114,11 @@ final class StatsStore: ObservableObject {
         }
     }
 
+    func clearAll() {
+        stats = Stats()
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
     private func rollDayIfNeeded() {
         let today = Self.localDayString()
         if stats.pvpDay != today {

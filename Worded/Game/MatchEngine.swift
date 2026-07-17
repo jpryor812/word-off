@@ -53,7 +53,7 @@ final class MatchEngine: ObservableObject {
     private var bannedWords: Set<String> = []    // words used in immediately-prior tied round
     private var opponentBanned: Set<String> = []
     private var seed = SeededRandom(seed: UInt64.random(in: 0...UInt64.max))
-    private let haptics = Haptics()
+    private let haptics = Haptics.shared
 
     var onMatchComplete: ((MatchRecord) -> Void)?
     var onRoundScored: ((RoundResult) -> Void)?

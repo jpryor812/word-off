@@ -53,9 +53,13 @@ final class SoundPlayer {
 
 /// Haptic feedback wrapper.
 final class Haptics {
+    static let shared = Haptics()
+
+    var isEnabled = true
     private let generator = UIImpactFeedbackGenerator(style: .medium)
 
     func impact() {
+        guard isEnabled else { return }
         generator.impactOccurred()
     }
 }

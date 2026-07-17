@@ -14,7 +14,29 @@ enum GameConstants {
     static let maxConsecutiveTiedReplays = 3
     static let dailyRackCounts = [5, 6, 7, 8, 9, 10]
     static let dailyRoundsPerPuzzle = 4
+    /// Sentinel `rack_size` for The Ladder daily (5→6→7→8→9→10 in one run).
+    static let ladderDailySentinel = 0
+    static let ladderRoundSizes = [5, 6, 7, 8, 9, 10]
     static let freeDailyPuzzlesPerDay = 3
+
+    static func isLadderDaily(_ rackSize: Int) -> Bool {
+        rackSize == ladderDailySentinel
+    }
+
+    static func dailyDisplayTitle(rackSize: Int) -> String {
+        isLadderDaily(rackSize) ? "The Ladder" : "\(rackSize)-Letter Daily"
+    }
+
+    static func dailyRounds(forRackSize rackSize: Int) -> Int {
+        isLadderDaily(rackSize) ? ladderRoundSizes.count : dailyRoundsPerPuzzle
+    }
+
+    static func dailyRoundRackSize(puzzleRackSize: Int, roundIndex: Int) -> Int {
+        if isLadderDaily(puzzleRackSize) {
+            return ladderRoundSizes[min(max(roundIndex, 0), ladderRoundSizes.count - 1)]
+        }
+        return puzzleRackSize
+    }
     static let baseLivesPerDay = 5
     static let maxStreakBonusLives = 5
     static let revealSeconds: Double = 3.0
@@ -129,15 +151,20 @@ extension DailyPuzzleResult {
         isPremium || date < today
     }
 
+    var displayTitle: String { GameConstants.dailyDisplayTitle(rackSize: rackSize) }
+
+    var isLadder: Bool { GameConstants.isLadderDaily(rackSize) }
+
     func shareText(
         perfectScore: Int? = nil,
         standing: (rank: Int, total: Int)? = nil
     ) -> String {
-        var lines = ["Worded \(rackSize)-Letter Daily — \(totalScore) pts"]
+        var lines = ["Worded \(displayTitle) — \(totalScore) pts"]
         for (index, score) in roundScores.enumerated() {
             let length = words[index]?.replacingOccurrences(of: " ✕", with: "").count ?? 0
             let blurred = length > 0 ? String(repeating: "▮", count: length) : "—"
-            lines.append("Rack \(index + 1): \(blurred) \(score) pts")
+            let sizeLabel = GameConstants.dailyRoundRackSize(puzzleRackSize: rackSize, roundIndex: index)
+            lines.append("Rack \(index + 1) (\(sizeLabel)): \(blurred) \(score) pts")
         }
         if let perfectScore {
             lines.append("Best possible: \(perfectScore) pts")
@@ -172,7 +199,19 @@ enum DailySeed {
     }
 
     static func rack(day: String, rackSize: Int, round: Int) -> [Character] {
+        if GameConstants.isLadderDaily(rackSize) {
+            return ladderRack(day: day, round: round)
+        }
         var rng = SeededRandom(string: "worded-daily-\(day)-size\(rackSize)-round\(round)")
         return WordDictionary.shared.makeRack(size: rackSize, rng: &rng)
+    }
+
+    /// Ladder uses its own seed stream so it doesn't collide with fixed-size dailies.
+    static func ladderRack(day: String, round: Int) -> [Character] {
+        let size = GameConstants.dailyRoundRackSize(
+            puzzleRackSize: GameConstants.ladderDailySentinel,
+            roundIndex: round)
+        var rng = SeededRandom(string: "worded-daily-\(day)-ladder-round\(round)")
+        return WordDictionary.shared.makeRack(size: size, rng: &rng)
     }
 }

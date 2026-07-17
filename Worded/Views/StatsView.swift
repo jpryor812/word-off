@@ -128,7 +128,7 @@ struct StatsView: View {
                         Text(result.date)
                             .font(.system(.caption, design: .rounded))
                             .foregroundColor(Theme.tileText.opacity(0.6))
-                        Text("\(result.rackSize)-letter")
+                        Text(result.isLadder ? "Ladder" : "\(result.rackSize)-letter")
                             .font(.system(.subheadline, design: .rounded).weight(.bold))
                             .foregroundColor(Theme.tileText)
                         Spacer()

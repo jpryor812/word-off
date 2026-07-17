@@ -116,6 +116,25 @@ final class MatchmakingService: ObservableObject {
         }
     }
 
+    /// True if another player is currently waiting in Quick Match (does not enqueue us).
+    func isSomeoneWaiting() async -> Bool {
+        guard SupabaseConfig.isConfigured, SupabaseClient.shared.currentSession != nil else {
+            return false
+        }
+        guard let data = try? await SupabaseClient.shared.rpc("matchmaking_someone_waiting") else {
+            return false
+        }
+        if let flag = try? JSONDecoder().decode(Bool.self, from: data) {
+            return flag
+        }
+        if let text = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           text == "true" {
+            return true
+        }
+        return false
+    }
+
     private func cancelQueueEntry() async throws {
         _ = try await SupabaseClient.shared.rpc("cancel_matchmaking")
     }

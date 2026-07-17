@@ -1,8 +1,8 @@
 import Foundation
 import SwiftUI
 
-/// Drives one daily puzzle: 4 seeded racks of a given size, timed rounds,
-/// cumulative score. Backgrounding forfeits the current rack (anti-cheat).
+/// Drives one daily puzzle: fixed-size (4 racks) or The Ladder (6 racks, 5→10).
+/// Backgrounding forfeits the current rack (anti-cheat).
 @MainActor
 final class DailyEngine: ObservableObject {
     enum Phase: Equatable {
@@ -27,19 +27,27 @@ final class DailyEngine: ObservableObject {
     @Published var submissionFeedback: String?
 
     let day: String
+    /// Fixed size 5–10, or `GameConstants.ladderDailySentinel` for The Ladder.
     let rackSize: Int
-    let roundDuration: Int
 
+    private var roundDuration = GameConstants.roundSeconds
     private var roundStart: Date?
     private var timerTask: Task<Void, Never>?
-    private let haptics = Haptics()
+    private let haptics = Haptics.shared
 
     var totalScore: Int { roundScores.reduce(0, +) }
+    var isLadder: Bool { GameConstants.isLadderDaily(rackSize) }
+    var totalRounds: Int { GameConstants.dailyRounds(forRackSize: rackSize) }
+    var displayTitle: String { GameConstants.dailyDisplayTitle(rackSize: rackSize) }
+    var currentRoundLetterCount: Int {
+        GameConstants.dailyRoundRackSize(puzzleRackSize: rackSize, roundIndex: rackIndex)
+    }
 
     init(day: String = DailySeed.todayString(), rackSize: Int) {
         self.day = day
         self.rackSize = rackSize
-        self.roundDuration = GameConstants.dailySeconds(forRackSize: rackSize)
+        self.roundDuration = GameConstants.dailySeconds(
+            forRackSize: GameConstants.dailyRoundRackSize(puzzleRackSize: rackSize, roundIndex: 0))
         self.secondsLeft = roundDuration
     }
 
@@ -53,6 +61,8 @@ final class DailyEngine: ObservableObject {
         satOut = false
         lastBreakdown = nil
         submissionFeedback = nil
+        let size = currentRoundLetterCount
+        roundDuration = GameConstants.dailySeconds(forRackSize: size)
         secondsLeft = roundDuration
         rack = DailySeed.rack(day: day, rackSize: rackSize, round: rackIndex)
         phase = .flipping
@@ -143,7 +153,7 @@ final class DailyEngine: ObservableObject {
         timerTask?.cancel()
         scoreCurrentRack()
 
-        if rackIndex + 1 >= GameConstants.dailyRoundsPerPuzzle {
+        if rackIndex + 1 >= totalRounds {
             phase = .finished
         } else {
             phase = .rackDone
@@ -181,7 +191,7 @@ final class DailyEngine: ObservableObject {
     func exitEarly() {
         timerTask?.cancel()
         if phase == .playing { scoreCurrentRack() }
-        while roundScores.count < GameConstants.dailyRoundsPerPuzzle {
+        while roundScores.count < totalRounds {
             roundScores.append(0)
             words.append(nil)
         }
@@ -215,24 +225,10 @@ enum DailySolver {
 
     /// Speed bonus is PvP-only; daily "best possible" is letter values alone.
     static func solve(day: String, rackSize: Int) -> [RackSolution] {
-        (0..<GameConstants.dailyRoundsPerPuzzle).map { round in
+        let rounds = GameConstants.dailyRounds(forRackSize: rackSize)
+        return (0..<rounds).map { round in
             let rack = DailySeed.rack(day: day, rackSize: rackSize, round: round)
-            var best = 0
-            var words: [String] = []
-            // Prefer recognizable common words; fall back to the full dictionary
-            // only if a rack happens to have no common plays.
-            var pool = WordDictionary.shared.buildableCommonWords(from: rack)
-            if pool.isEmpty { pool = WordDictionary.shared.buildableWords(from: rack) }
-            for word in pool {
-                let score = Scoring.score(word: word, rackSize: rack.count, firstSubmit: false).total
-                if score > best {
-                    best = score
-                    words = [word]
-                } else if score == best {
-                    words.append(word)
-                }
-            }
-            return RackSolution(id: round, rack: rack, maxScore: best, words: words.sorted())
+            return solution(for: rack, round: round)
         }
     }
 
@@ -258,5 +254,22 @@ enum DailySolver {
             }
         }
         return (best, Array(words.sorted().prefix(limit)))
+    }
+
+    private static func solution(for rack: [Character], round: Int) -> RackSolution {
+        var best = 0
+        var words: [String] = []
+        var pool = WordDictionary.shared.buildableCommonWords(from: rack)
+        if pool.isEmpty { pool = WordDictionary.shared.buildableWords(from: rack) }
+        for word in pool {
+            let score = Scoring.score(word: word, rackSize: rack.count, firstSubmit: false).total
+            if score > best {
+                best = score
+                words = [word]
+            } else if score == best {
+                words.append(word)
+            }
+        }
+        return RackSolution(id: round, rack: rack, maxScore: best, words: words.sorted())
     }
 }

@@ -35,6 +35,7 @@ final class AppState: ObservableObject {
     let challengeService = MatchChallengeService()
     let matchmakingService = MatchmakingService()
     let onboardingStore = OnboardingStore()
+    let settings = SettingsStore.shared
 
     @Published var onlineMatchToStart: OnlineMatchConfig?
     @Published var challengeStatusMessage: String?
@@ -63,6 +64,7 @@ final class AppState: ObservableObject {
     private var startMatchAfterDailyExit = false
     private var isAppInForeground = true
     private var matchmakingBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var someoneWaitingPollTask: Task<Void, Never>?
 
     private var cancellables: Set<AnyCancellable> = []
     private var pendingDeepLinkChallengeId: String?
@@ -77,7 +79,8 @@ final class AppState: ObservableObject {
                       badgeStore.objectWillChange.eraseToAnyPublisher(),
                       challengeService.objectWillChange.eraseToAnyPublisher(),
                       matchmakingService.objectWillChange.eraseToAnyPublisher(),
-                      onboardingStore.objectWillChange.eraseToAnyPublisher()] {
+                      onboardingStore.objectWillChange.eraseToAnyPublisher(),
+                      settings.objectWillChange.eraseToAnyPublisher()] {
             child
                 .receive(on: RunLoop.main)
                 .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -110,6 +113,7 @@ final class AppState: ObservableObject {
         }
         isLoading = false
         await processPendingDeepLinkIfNeeded()
+        await refreshDailyReminderNotification()
     }
 
     private func openChallengeFromDeepLink(_ challengeId: String) async {
@@ -216,9 +220,59 @@ final class AppState: ObservableObject {
             if !isInDailyPlay, let config = pendingOnlineMatch, matchmakingBanner == .hidden {
                 matchmakingBanner = .matchFound(opponentName: config.opponentUsername)
             }
-        } else if phase == .background, isMatchmaking {
-            beginMatchmakingBackgroundTask()
+            Task { await refreshDailyReminderNotification() }
+            startSomeoneWaitingPolling()
+        } else {
+            stopSomeoneWaitingPolling()
+            if phase == .background {
+                Task { await checkSomeoneWaitingAndNotify() }
+                if isMatchmaking {
+                    beginMatchmakingBackgroundTask()
+                }
+            }
         }
+    }
+
+    /// Schedule (or clear) the 8pm local daily reminder based on today's progress.
+    func refreshDailyReminderNotification() async {
+        let today = DailySeed.todayString()
+        let hasPlayed = dailyStore.completedCount(day: today) > 0
+        await DailyReminderNotifications.refresh(hasPlayedAnyDailyToday: hasPlayed)
+    }
+
+    /// Restart queue peeking after the Settings toggle changes.
+    func refreshSomeoneWaitingPolling() {
+        if isAppInForeground {
+            startSomeoneWaitingPolling()
+        } else {
+            stopSomeoneWaitingPolling()
+        }
+    }
+
+    private func startSomeoneWaitingPolling() {
+        stopSomeoneWaitingPolling()
+        guard !isLocalMode, session != nil else { return }
+        guard settings.notificationsEnabled, settings.notifyWhenSomeoneWaiting else { return }
+        someoneWaitingPollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.checkSomeoneWaitingAndNotify()
+                try? await Task.sleep(for: .seconds(45))
+            }
+        }
+    }
+
+    private func stopSomeoneWaitingPolling() {
+        someoneWaitingPollTask?.cancel()
+        someoneWaitingPollTask = nil
+    }
+
+    private func checkSomeoneWaitingAndNotify() async {
+        guard settings.canSendSomeoneWaitingPing() else { return }
+        guard !isMatchmaking, onlineMatchToStart == nil else { return }
+        let waiting = await matchmakingService.isSomeoneWaiting()
+        guard waiting else { return }
+        MatchmakingNotifications.postSomeoneWaiting()
+        settings.markSomeoneWaitingPingSent()
     }
 
     /// Player tapped the match-found banner.
@@ -529,6 +583,36 @@ final class AppState: ObservableObject {
         SupabaseClient.shared.signOut()
         session = nil
         profile = nil
+    }
+
+    /// Permanently deletes the signed-in account and clears local data (App Store 5.1.1(v)).
+    func deleteAccount() async throws {
+        if !isLocalMode, session != nil {
+            _ = try await SupabaseClient.shared.rpc("delete_own_account")
+        }
+        clearLocalAccountData()
+        signOut()
+    }
+
+    private func clearLocalAccountData() {
+        let defaults = UserDefaults.standard
+        let keys = [
+            "worded.username", "worded.country", "worded.session", "worded.profile.cache",
+            "worded.session.lastActiveAt", "worded.onboarding.completedVersion",
+            "worded.onboarding.livesIntroCompleted", "worded.onboarding.welcomeIntroCompleted",
+            "worded.lives.day", "worded.lives.used", "worded.streak.count", "worded.streak.lastLogin",
+            "worded.friendGameUsed", "worded.daily.unlocked", "worded.daily.streak.count",
+            "worded.daily.streak.lastDay", "worded.dailyPass.day", "worded.promo.premium",
+            "worded.promo.expiresAt", "worded.challenge.startedMatchIds",
+        ]
+        for key in keys { defaults.removeObject(forKey: key) }
+        username = ""
+        country = ""
+        dailyStore.clearAllResults()
+        statsStore.clearAll()
+        badgeStore.clearAll()
+        settings.notifyWhenSomeoneWaiting = false
+        onboardingStore.resetForAccountDeletion()
     }
 
     /// Keeps the 7-day logged-in window open while the app is in use.

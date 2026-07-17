@@ -6,6 +6,7 @@ struct HomeView: View {
     @State private var showFriendSheet = false
     @State private var showPaywall = false
     @State private var showStats = false
+    @State private var showSettings = false
     @State private var outOfLivesAlert = false
     @State private var challengeError: String?
     @State private var challengingUsername: String?
@@ -69,7 +70,6 @@ struct HomeView: View {
                 store: app.onboardingStore,
                 isPremium: app.entitlements.isPremium,
                 onNext: { app.onboardingStore.advance() },
-                onSkip: { app.onboardingStore.skip() },
                 onLivesIntroDone: { app.onboardingStore.completeLivesIntro() })
             .navigationBarHidden(true)
             .fullScreenCover(item: $app.onlineMatchToStart) { config in
@@ -128,6 +128,9 @@ struct HomeView: View {
             }
             .sheet(isPresented: $showStats) {
                 StatsView().environmentObject(app)
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsView().environmentObject(app)
             }
             .onAppear {
                 app.onboardingStore.startIfNeeded()
@@ -218,14 +221,28 @@ struct HomeView: View {
                     .foregroundColor(Theme.subtleText)
             }
             Spacer()
-            Button {
-                showStats = true
-            } label: {
-                Image(systemName: "chart.bar.fill")
-                    .font(.title2)
-                    .foregroundColor(.white)
-                    .padding(10)
-                    .background(Circle().fill(Theme.backgroundLight))
+            HStack(spacing: 10) {
+                Button {
+                    showStats = true
+                } label: {
+                    Image(systemName: "chart.bar.fill")
+                        .font(.title2)
+                        .foregroundColor(.white)
+                        .padding(10)
+                        .background(Circle().fill(Theme.backgroundLight))
+                }
+                .accessibilityLabel("Stats")
+
+                Button {
+                    showSettings = true
+                } label: {
+                    Image(systemName: "gearshape.fill")
+                        .font(.title2)
+                        .foregroundColor(.white)
+                        .padding(10)
+                        .background(Circle().fill(Theme.backgroundLight))
+                }
+                .accessibilityLabel("Settings")
             }
         }
         .padding(.top, 8)

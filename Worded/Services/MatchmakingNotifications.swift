@@ -7,6 +7,7 @@ enum MatchmakingNotificationID {
     static let aiReady = "worded.matchmaking.aiReady"
     static let searchPaused = "worded.matchmaking.searchPaused"
     static let searchTimeout = "worded.matchmaking.searchTimeout"
+    static let someoneWaiting = "worded.matchmaking.someoneWaiting"
     static let categoryPlay = "WORD_ED_MATCH_FOUND"
 }
 
@@ -52,6 +53,16 @@ enum MatchmakingNotifications {
             body: "Reopen Worded to keep looking for a match.")
     }
 
+    /// Opt-in alert when another player is waiting for Quick Match.
+    static func postSomeoneWaiting() {
+        guard SettingsStore.shared.notificationsEnabled,
+              SettingsStore.shared.notifyWhenSomeoneWaiting else { return }
+        post(
+            id: MatchmakingNotificationID.someoneWaiting,
+            title: "Someone’s looking for a match",
+            body: "A player is waiting for Quick Match — jump in and play!")
+    }
+
     static func clearSearchTimeout() {
         let center = UNUserNotificationCenter.current()
         center.removePendingNotificationRequests(
@@ -67,6 +78,7 @@ enum MatchmakingNotifications {
             MatchmakingNotificationID.aiReady,
             MatchmakingNotificationID.searchPaused,
             MatchmakingNotificationID.searchTimeout,
+            MatchmakingNotificationID.someoneWaiting,
         ]
         center.removeDeliveredNotifications(withIdentifiers: ids)
         center.removePendingNotificationRequests(withIdentifiers: ids)

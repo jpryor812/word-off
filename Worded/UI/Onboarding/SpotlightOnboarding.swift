@@ -105,7 +105,6 @@ extension View {
         store: OnboardingStore,
         isPremium: Bool,
         onNext: @escaping () -> Void,
-        onSkip: @escaping () -> Void,
         onLivesIntroDone: @escaping () -> Void = {}
     ) -> some View {
         overlayPreferenceValue(OnboardingAnchorPreferenceKey.self) { anchorMap in
@@ -117,7 +116,6 @@ extension View {
                         arrowTargets: arrowRects,
                         isPremium: isPremium,
                         onNext: onNext,
-                        onSkip: onSkip,
                         onLivesIntroDone: onLivesIntroDone)
                 }
             }
@@ -126,8 +124,7 @@ extension View {
 
     func dailyResultOnboardingSpotlight(
         store: OnboardingStore,
-        onNext: @escaping () -> Void,
-        onSkip: @escaping () -> Void
+        onNext: @escaping () -> Void
     ) -> some View {
         overlayPreferenceValue(DailyResultOnboardingAnchorPreferenceKey.self) { anchorMap in
             GeometryReader { proxy in
@@ -136,8 +133,7 @@ extension View {
                     DailyResultOnboardingOverlay(
                         store: store,
                         arrowTargets: arrowRects,
-                        onNext: onNext,
-                        onSkip: onSkip)
+                        onNext: onNext)
                 }
             }
         }
@@ -184,7 +180,6 @@ struct HomeOnboardingOverlay: View {
     let arrowTargets: [HomeOnboardingAnchor: CGRect]
     let isPremium: Bool
     var onNext: () -> Void
-    var onSkip: () -> Void
     var onLivesIntroDone: () -> Void = {}
 
     var body: some View {
@@ -200,7 +195,7 @@ struct HomeOnboardingOverlay: View {
                     isVisible: store.livesIntroPhase == .showingCallout,
                     onDone: onLivesIntroDone)
             } else if store.step == .homePlayFreely {
-                HomeWelcomeOverlay(onContinue: onNext, onSkip: onSkip)
+                HomeWelcomeOverlay(onContinue: onNext)
             } else if store.step == .twoWaysToPlay {
                 if store.blocksHomeInteraction {
                     Color.clear
@@ -209,8 +204,7 @@ struct HomeOnboardingOverlay: View {
                 }
                 TwoWaysToPlayCallout(
                     isVisible: !store.isStepTransitioning,
-                    onNext: onNext,
-                    onSkip: onSkip)
+                    onNext: onNext)
             } else if store.step == .startSixLetterDaily {
                 if store.blocksHomeInteraction {
                     Color.clear
@@ -224,8 +218,7 @@ struct HomeOnboardingOverlay: View {
                     placement: .belowMidScreen,
                     showsNext: false,
                     isVisible: !store.isStepTransitioning,
-                    onNext: onNext,
-                    onSkip: onSkip)
+                    onNext: onNext)
             } else if store.isOnHomeTour {
                 if store.blocksHomeInteraction {
                     Color.clear
@@ -241,8 +234,7 @@ struct HomeOnboardingOverlay: View {
                         placement: store.calloutPlacement,
                         showsNext: true,
                         isVisible: !store.isStepTransitioning,
-                        onNext: onNext,
-                        onSkip: onSkip)
+                        onNext: onNext)
                 }
             }
         }
@@ -255,7 +247,6 @@ struct HomeOnboardingOverlay: View {
 private struct TwoWaysToPlayCallout: View {
     var isVisible: Bool
     var onNext: () -> Void
-    var onSkip: () -> Void
 
     var body: some View {
         GeometryReader { geo in
@@ -300,14 +291,6 @@ private struct TwoWaysToPlayCallout: View {
             }
         }
         .animation(.easeInOut(duration: 0.3), value: isVisible)
-        .overlay(alignment: .topTrailing) {
-            Button("Skip tour", action: onSkip)
-                .font(.system(.caption, design: .rounded).weight(.bold))
-                .foregroundColor(.white.opacity(0.85))
-                .padding(.top, 12)
-                .padding(.trailing, 16)
-                .opacity(isVisible ? 1 : 0)
-        }
     }
 
     private func modeLabel(title: String, systemImage: String) -> some View {
@@ -383,7 +366,6 @@ struct DailyResultOnboardingOverlay: View {
     @ObservedObject var store: OnboardingStore
     let arrowTargets: [DailyResultOnboardingAnchor: CGRect]
     var onNext: () -> Void
-    var onSkip: () -> Void
 
     var body: some View {
         ZStack {
@@ -401,8 +383,7 @@ struct DailyResultOnboardingOverlay: View {
                     placement: store.calloutPlacement,
                     showsNext: step == .dailyLeaderboard,
                     isVisible: !store.isStepTransitioning,
-                    onNext: onNext,
-                    onSkip: onSkip)
+                    onNext: onNext)
             }
         }
     }
@@ -418,7 +399,6 @@ private struct AnchoredOnboardingCallout: View {
     var showsNext: Bool
     var isVisible: Bool
     var onNext: () -> Void
-    var onSkip: () -> Void
 
     private let gap: CGFloat = 12
 
@@ -450,14 +430,6 @@ private struct AnchoredOnboardingCallout: View {
             .transition(.opacity.combined(with: .move(edge: .bottom)))
         }
         .animation(.easeInOut(duration: 0.3), value: isVisible)
-        .overlay(alignment: .topTrailing) {
-            Button("Skip tour", action: onSkip)
-                .font(.system(.caption, design: .rounded).weight(.bold))
-                .foregroundColor(.white.opacity(0.85))
-                .padding(.top, 12)
-                .padding(.trailing, 16)
-                .opacity(isVisible ? 1 : 0)
-        }
     }
 
     @ViewBuilder
@@ -615,21 +587,12 @@ private struct AnchoredOnboardingCallout: View {
 
 struct HomeWelcomeOverlay: View {
     var onContinue: () -> Void
-    var onSkip: () -> Void
 
     var body: some View {
         ZStack {
             Color.black.opacity(0.5).ignoresSafeArea()
 
             VStack(spacing: 0) {
-                HStack {
-                    Spacer()
-                    Button("Skip tour", action: onSkip)
-                        .font(.system(.caption, design: .rounded).weight(.bold))
-                        .foregroundColor(.white.opacity(0.85))
-                }
-                .padding(.bottom, 8)
-
                 VStack(alignment: .leading, spacing: 12) {
                     Text("Step \(OnboardingStep.homePlayFreely.stepNumber) of \(OnboardingStep.count)")
                         .font(.system(.caption2, design: .rounded).weight(.black))

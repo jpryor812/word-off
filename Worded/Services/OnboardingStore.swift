@@ -76,8 +76,8 @@ enum LivesIntroPhase: Equatable {
 @MainActor
 final class OnboardingStore: ObservableObject {
     static let currentVersion = 6
-    /// Set to `false` before shipping — when true, onboarding runs every Home launch and never saves completion.
-    static let repeatEveryLaunchForTesting = true
+    /// Set to `true` only while iterating on the tour — when true, onboarding runs every Home launch.
+    static let repeatEveryLaunchForTesting = false
     private static let completedKey = "worded.onboarding.completedVersion"
     private static let livesIntroCompletedKey = "worded.onboarding.livesIntroCompleted"
     private static let welcomeIntroCompletedKey = "worded.onboarding.welcomeIntroCompleted"
@@ -242,6 +242,20 @@ final class OnboardingStore: ObservableObject {
         UserDefaults.standard.removeObject(forKey: Self.completedKey)
         UserDefaults.standard.removeObject(forKey: Self.livesIntroCompletedKey)
         UserDefaults.standard.removeObject(forKey: Self.welcomeIntroCompletedKey)
+    }
+
+    func resetForAccountDeletion() {
+        livesIntroTask?.cancel()
+        livesIntroTask = nil
+        resetForDebug()
+        isActive = false
+        step = nil
+        isStepTransitioning = false
+        awaitingDailyResultsOnboarding = false
+        isDeferringTourForHomeEntrance = false
+        livesIntroPhase = .idle
+        livesIntroVisualFilled = 0
+        livesIntroPoppingIndex = nil
     }
 
     func startIfNeeded() {

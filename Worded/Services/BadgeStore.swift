@@ -68,6 +68,7 @@ final class BadgeStore: ObservableObject {
         if maxHits == solutions.count && !solutions.isEmpty {
             stats.flawlessDailyCount += 1
         }
+        // Full Menu = all fixed-size dailies (5–10). The Ladder does not count.
         if completedSizesToday >= GameConstants.dailyRackCounts.count {
             stats.fullMenuDailyCount += 1
         }
@@ -182,6 +183,11 @@ final class BadgeStore: ObservableObject {
         } catch {
             return nil
         }
+    }
+
+    func clearAll() {
+        stats = BadgeStats()
+        try? FileManager.default.removeItem(at: fileURL)
     }
 
     // MARK: - Persistence

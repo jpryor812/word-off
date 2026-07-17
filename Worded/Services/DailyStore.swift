@@ -64,6 +64,13 @@ final class DailyStore: ObservableObject {
         completedRackSizes(day: day).count
     }
 
+    /// Fixed-size dailies only (5–10). Excludes The Ladder for Full Menu badge.
+    func completedStandardCount(day: String) -> Int {
+        completedRackSizes(day: day)
+            .intersection(Set(GameConstants.dailyRackCounts))
+            .count
+    }
+
     func save(_ result: DailyPuzzleResult) {
         results.removeAll { $0.id == result.id }
         results.append(result)
