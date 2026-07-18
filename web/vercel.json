@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    { "source": "/challenge/:id", "destination": "/challenge.html" },
+    { "source": "/user/:name", "destination": "/user.html" }
+  ],
+  "headers": [
+    {
+      "source": "/.well-known/apple-app-site-association",
+      "headers": [{ "key": "Content-Type", "value": "application/json" }]
+    }
+  ]
+}

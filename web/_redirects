@@ -1,0 +1,4 @@
+# Netlify-style redirects for challenge / profile Universal Link paths.
+/challenge/*  /challenge.html  200
+/user/*       /user.html       200
+/.well-known/apple-app-site-association  /.well-known/apple-app-site-association  200

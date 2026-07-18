@@ -15,8 +15,8 @@ enum BeginQuickMatchResult: Equatable {
     case started
     case outOfLives
     case alreadyBusy
-    /// Local / unsigned-in mode — start AI immediately.
-    case localAI
+    /// Quick Match needs a signed-in online account (AI is a separate button).
+    case needsSignIn
 }
 
 @MainActor
@@ -34,6 +34,7 @@ final class AppState: ObservableObject {
     let badgeStore = BadgeStore()
     let challengeService = MatchChallengeService()
     let matchmakingService = MatchmakingService()
+    let friendsService = FriendsService()
     let onboardingStore = OnboardingStore()
     let settings = SettingsStore.shared
 
@@ -57,6 +58,12 @@ final class AppState: ObservableObject {
     @Published var pendingAITier: Int?
     /// Bumped to tell Home to present an AI MatchView.
     @Published var launchAIMatchToken = 0
+    /// First-time online rules card (before search starts).
+    @Published var showOnlineRulesIntro = false
+    /// Explain-then-ask for notifications after first Play Online search starts.
+    @Published var showMatchmakingNotifyIntro = false
+    /// Start search after the online-rules card is dismissed.
+    private var pendingQuickMatchAfterRules = false
     /// Daily puzzle is on screen — don't auto-interrupt with a found match.
     @Published var isInDailyPlay = false
     /// Ask DailyPlayView to dismiss so a pending match can start.
@@ -65,6 +72,9 @@ final class AppState: ObservableObject {
     private var isAppInForeground = true
     private var matchmakingBackgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var someoneWaitingPollTask: Task<Void, Never>?
+    /// Avoid re-firing local notifications for the same social event.
+    private var notifiedChallengeIds: Set<String> = []
+    private var notifiedFriendRequestIds: Set<String> = []
 
     private var cancellables: Set<AnyCancellable> = []
     private var pendingDeepLinkChallengeId: String?
@@ -79,6 +89,7 @@ final class AppState: ObservableObject {
                       badgeStore.objectWillChange.eraseToAnyPublisher(),
                       challengeService.objectWillChange.eraseToAnyPublisher(),
                       matchmakingService.objectWillChange.eraseToAnyPublisher(),
+                      friendsService.objectWillChange.eraseToAnyPublisher(),
                       onboardingStore.objectWillChange.eraseToAnyPublisher(),
                       settings.objectWillChange.eraseToAnyPublisher()] {
             child
@@ -110,10 +121,16 @@ final class AppState: ObservableObject {
             await restoreOnlineSession()
             await badgeStore.syncFromServer()
             challengeService.startPolling()
+            if session != nil {
+                friendsService.start()
+            }
         }
         isLoading = false
         await processPendingDeepLinkIfNeeded()
         await refreshDailyReminderNotification()
+        if !isLocalMode, session != nil {
+            await PushRegistration.syncStoredTokenIfNeeded()
+        }
     }
 
     private func openChallengeFromDeepLink(_ challengeId: String) async {
@@ -123,6 +140,10 @@ final class AppState: ObservableObject {
         } catch {
             challengeStatusMessage = error.localizedDescription
         }
+    }
+
+    func openChallengeFromNotification(challengeId: String) async {
+        await openChallengeFromDeepLink(challengeId)
     }
 
     @Published var pendingChallengeUsername: String?
@@ -155,10 +176,11 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// Starts a non-blocking quick-match search (banner stays up while browsing).
-    /// Life is consumed only when a match (human or AI) actually begins.
+    /// Starts a non-blocking human quick-match search (banner stays up while browsing).
+    /// Life is consumed only when a human match actually begins. Never falls back to AI.
     func beginBackgroundQuickMatch() -> BeginQuickMatchResult {
-        if isMatchmaking || pendingOnlineMatch != nil || pendingAIMatch || showAIDifficultyPicker {
+        if isMatchmaking || pendingOnlineMatch != nil || pendingAIMatch || showAIDifficultyPicker
+            || showOnlineRulesIntro || showMatchmakingNotifyIntro {
             return .alreadyBusy
         }
 
@@ -171,19 +193,48 @@ final class AppState: ObservableObject {
         pendingAITier = nil
 
         if isLocalMode || session == nil {
-            return .localAI
+            return .needsSignIn
         }
 
-        guard let userId = session?.userId else {
-            return .localAI
+        guard session?.userId != nil else {
+            return .needsSignIn
         }
 
-        startMatchmakingSearch(userId: userId, requestNotificationAuth: true)
+        // First online game: teach rules before enqueueing a search.
+        if !settings.didExplainOnlineRules {
+            pendingQuickMatchAfterRules = true
+            showOnlineRulesIntro = true
+            return .started
+        }
+
+        beginQuickMatchSearchAfterIntros()
         return .started
     }
 
-    /// Stop searching and show the 1–10 difficulty picker.
+    /// After the online-rules card — start searching, then show the notify intro if needed.
+    func completeOnlineRulesIntro() {
+        showOnlineRulesIntro = false
+        settings.didExplainOnlineRules = true
+        guard pendingQuickMatchAfterRules else { return }
+        pendingQuickMatchAfterRules = false
+        beginQuickMatchSearchAfterIntros()
+    }
+
+    private func beginQuickMatchSearchAfterIntros() {
+        guard let userId = session?.userId else { return }
+        startMatchmakingSearch(userId: userId, requestNotificationAuth: false)
+        if !settings.didPromptMatchmakingNotify {
+            showMatchmakingNotifyIntro = true
+        }
+    }
+
+    /// Explicit Play AI — difficulty picker. Cancels any human search first.
     func presentAIDifficultyPicker() {
+        let canPlay = entitlements.isPremium || lives.livesRemaining > 0
+        guard canPlay else {
+            // Home shows the out-of-lives alert via beginAIMatch().
+            return
+        }
         matchmakingService.cancelSearch()
         isMatchmaking = false
         endMatchmakingBackgroundTask()
@@ -191,6 +242,14 @@ final class AppState: ObservableObject {
         MatchmakingNotifications.clearMatchFound()
         selectedAIDifficulty = 5
         showAIDifficultyPicker = true
+    }
+
+    /// Starts the AI difficulty flow from Home. Returns false if out of lives.
+    func beginAIMatch() -> Bool {
+        let canPlay = entitlements.isPremium || lives.livesRemaining > 0
+        guard canPlay else { return false }
+        presentAIDifficultyPicker()
+        return true
     }
 
     func dismissAIDifficultyPicker() {
@@ -202,7 +261,7 @@ final class AppState: ObservableObject {
         selectedAIDifficulty = clamped
         pendingAITier = clamped
         showAIDifficultyPicker = false
-        matchmakingFellBackToAI = true
+        matchmakingFellBackToAI = false
         pendingAIMatch = true
 
         if isInDailyPlay {
@@ -222,14 +281,40 @@ final class AppState: ObservableObject {
             }
             Task { await refreshDailyReminderNotification() }
             startSomeoneWaitingPolling()
+            if !isLocalMode, session != nil {
+                friendsService.startHeartbeat()
+                friendsService.start()
+            }
         } else {
             stopSomeoneWaitingPolling()
+            friendsService.stopHeartbeat()
             if phase == .background {
-                Task { await checkSomeoneWaitingAndNotify() }
+                Task {
+                    await checkSomeoneWaitingAndNotify()
+                    await notifySocialEventsIfNeeded()
+                    friendsService.stop()
+                }
                 if isMatchmaking {
                     beginMatchmakingBackgroundTask()
                 }
             }
+        }
+    }
+
+    /// Local notifications for pending challenges / friend requests when leaving the app.
+    private func notifySocialEventsIfNeeded() async {
+        guard !isLocalMode, session != nil else { return }
+        await challengeService.refresh()
+        await friendsService.refresh()
+
+        if let invite = challengeService.incomingChallenge,
+           !notifiedChallengeIds.contains(invite.id) {
+            notifiedChallengeIds.insert(invite.id)
+            SocialNotifications.postChallenge(from: invite.challengerUsername)
+        }
+        for request in friendsService.incomingRequests where !notifiedFriendRequestIds.contains(request.id) {
+            notifiedFriendRequestIds.insert(request.id)
+            SocialNotifications.postFriendRequest(from: request.otherUsername)
         }
     }
 
@@ -303,6 +388,14 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// After the “search can take a minute” card — show the system notification prompt.
+    func completeMatchmakingNotifyIntro() async {
+        showMatchmakingNotifyIntro = false
+        settings.didPromptMatchmakingNotify = true
+        await MatchmakingNotifications.requestAuthorizationIfNeeded()
+        await refreshDailyReminderNotification()
+    }
+
     func handleDailyPlayDidDismiss() {
         isInDailyPlay = false
         requestExitDailyPlay = false
@@ -345,7 +438,6 @@ final class AppState: ObservableObject {
             }
 
         case .cancelled:
-            // Don't clear if the player opened the AI difficulty picker.
             if !showAIDifficultyPicker {
                 clearMatchmakingUI()
             }
@@ -466,6 +558,15 @@ final class AppState: ObservableObject {
            let matchId = invite.matchId,
            !challengeService.hasStartedMatch(matchId),
            let config = challengeService.onlineConfig(for: invite, myUserId: session.userId) {
+            // Only auto-launch if we sent a challenge this session and are waiting.
+            // Otherwise a stale accept (e.g. after reinstall / re-login) would yank
+            // the player into an old match — often against someone who isn't online,
+            // which feels like a broken AI game.
+            guard isWaitingForChallengeAccept else {
+                challengeService.markMatchStarted(matchId)
+                challengeService.clearAcceptedOutgoing()
+                return
+            }
             isWaitingForChallengeAccept = false
             challengeService.markMatchStarted(matchId)
             onlineMatchToStart = config
@@ -474,6 +575,10 @@ final class AppState: ObservableObject {
             isWaitingForChallengeAccept = false
             challengeStatusMessage = "\(invite.opponentUsername) declined your challenge."
             challengeService.clearRejectedOutgoing()
+        } else if invite.status == "expired" || invite.isExpired {
+            isWaitingForChallengeAccept = false
+            challengeStatusMessage = "Your challenge to \(invite.opponentUsername) expired after 6 hours."
+            challengeService.clearExpiredOutgoing()
         }
     }
 
@@ -481,6 +586,7 @@ final class AppState: ObservableObject {
         onlineMatchToStart = nil
         isWaitingForChallengeAccept = false
         pendingInviteChallenge = nil
+        onboardingStore.beginSomeoneWaitingSettingsAfterOnlineMatch()
     }
 
     /// Restores a saved Supabase session when opened within the last 7 days.
@@ -554,10 +660,18 @@ final class AppState: ObservableObject {
                     UserDefaults.standard.set(profileCountry, forKey: "worded.country")
                 }
                 SupabaseClient.cacheProfile(profile)
+                startSocialServicesIfNeeded()
             }
         } catch {
             // Profile row may not exist yet (fresh signup); AuthView handles creation.
         }
+    }
+
+    private func startSocialServicesIfNeeded() {
+        guard !isLocalMode, session != nil else { return }
+        challengeService.startPolling()
+        friendsService.start()
+        Task { await PushRegistration.syncStoredTokenIfNeeded() }
     }
 
     func createProfile(username: String, country: String) async throws {
@@ -577,12 +691,18 @@ final class AppState: ObservableObject {
         let newProfile = Profile(id: session.userId, username: username, country: country, isPremium: false)
         profile = newProfile
         SupabaseClient.cacheProfile(newProfile)
+        startSocialServicesIfNeeded()
     }
 
     func signOut() {
-        SupabaseClient.shared.signOut()
-        session = nil
-        profile = nil
+        friendsService.stop()
+        challengeService.stopPolling()
+        Task { @MainActor in
+            await PushRegistration.clearTokenFromServer()
+            SupabaseClient.shared.signOut()
+            session = nil
+            profile = nil
+        }
     }
 
     /// Permanently deletes the signed-in account and clears local data (App Store 5.1.1(v)).

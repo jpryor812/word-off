@@ -21,37 +21,20 @@ struct MatchmakingBanner: View {
                         Spacer(minLength: 0)
                     }
 
-                    HStack(spacing: 8) {
-                        Button {
-                            app.cancelQuickMatchSearch()
-                        } label: {
-                            Text("Cancel")
-                                .font(.system(.caption, design: .rounded).weight(.bold))
-                                .foregroundColor(.white)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 8)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .fill(Color.white.opacity(0.22))
-                                )
-                        }
-                        .buttonStyle(.plain)
-
-                        Button {
-                            app.presentAIDifficultyPicker()
-                        } label: {
-                            Text("Play AI")
-                                .font(.system(.caption, design: .rounded).weight(.bold))
-                                .foregroundColor(Theme.background)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 8)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 10)
-                                        .fill(Color.white)
-                                )
-                        }
-                        .buttonStyle(.plain)
+                    Button {
+                        app.cancelQuickMatchSearch()
+                    } label: {
+                        Text("Cancel")
+                            .font(.system(.caption, design: .rounded).weight(.bold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 8)
+                            .background(
+                                RoundedRectangle(cornerRadius: 10)
+                                    .fill(Color.white.opacity(0.22))
+                            )
                     }
+                    .buttonStyle(.plain)
                 }
             }
         case .matchFound(let opponent):
@@ -108,7 +91,7 @@ struct MatchmakingBanner: View {
     }
 }
 
-/// Modal to pick AI difficulty 1–10 before starting a stand-in match.
+/// Modal to pick AI difficulty 1–10 before an explicit Play AI match.
 struct AIDifficultyPickerOverlay: View {
     @EnvironmentObject var app: AppState
     @State private var difficulty: Double = 5

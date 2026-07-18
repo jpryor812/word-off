@@ -7,6 +7,7 @@ enum MatchChallengeError: LocalizedError {
     case cannotChallengeSelf
     case alreadyPending
     case notFound
+    case expired
 
     var errorDescription: String? {
         switch self {
@@ -22,6 +23,8 @@ enum MatchChallengeError: LocalizedError {
             return "A challenge is already waiting with this player."
         case .notFound:
             return "That challenge is no longer available."
+        case .expired:
+            return "This invite expired (challenges last 6 hours)."
         }
     }
 }
@@ -72,6 +75,7 @@ final class MatchChallengeService: ObservableObject {
 
     func refresh() async {
         guard let session = SupabaseClient.shared.currentSession else { return }
+        await expireStaleChallengesOnServer()
         await refreshIncoming(for: session.userId)
         await refreshOutgoing(for: session.userId)
     }
@@ -95,9 +99,8 @@ final class MatchChallengeService: ObservableObject {
             throw MatchChallengeError.alreadyPending
         }
 
-        // Cancel any of our own stale pending challenges to this player so
-        // re-sending always works (old ones otherwise block forever).
-        await cancelPending(challengerId: session.userId, opponentId: opponent.id)
+        // One active outgoing invite at a time — a new challenge replaces any prior pending.
+        await cancelAllOutgoingPending(challengerId: session.userId)
 
         let seed = UUID().uuidString
         let payload: [String: Any] = [
@@ -117,18 +120,33 @@ final class MatchChallengeService: ObservableObject {
               let invite = parseChallenge(row, challengerUsername: nil, opponentUsername: opponent.username) else {
             throw SupabaseError.decoding
         }
+        let result: MatchChallengeInvite
         if let full = try await fetchChallenge(id: invite.id) {
             outgoingChallenge = full
-            return full
+            result = full
+        } else {
+            outgoingChallenge = invite
+            result = invite
         }
-        outgoingChallenge = invite
-        return invite
+        let fromName = UserDefaults.standard.string(forKey: "worded.username") ?? "Someone"
+        Task {
+            await PushNotify.challenge(
+                toUserId: opponent.id,
+                fromUsername: fromName,
+                challengeId: result.id)
+        }
+        return result
     }
 
     func acceptChallenge(_ challenge: MatchChallengeInvite) async throws -> OnlineMatchConfig {
         guard let session = SupabaseClient.shared.currentSession else { throw MatchChallengeError.notSignedIn }
         guard challenge.status == "pending", challenge.opponentId == session.userId else {
             throw MatchChallengeError.notFound
+        }
+        if challenge.isExpired {
+            await markExpired(id: challenge.id)
+            incomingChallenge = nil
+            throw MatchChallengeError.expired
         }
 
         let matchPayload: [String: Any] = [
@@ -206,6 +224,12 @@ final class MatchChallengeService: ObservableObject {
         }
     }
 
+    func clearExpiredOutgoing() {
+        if let invite = outgoingChallenge, invite.status == "expired" || invite.isExpired {
+            outgoingChallenge = nil
+        }
+    }
+
     func clearAcceptedOutgoing() {
         if outgoingChallenge?.status == "accepted" {
             outgoingChallenge = nil
@@ -230,7 +254,16 @@ final class MatchChallengeService: ObservableObject {
         guard let invite = try await fetchChallenge(id: id) else {
             throw MatchChallengeError.notFound
         }
-        guard invite.opponentId == session.userId, invite.status == "pending" else {
+        guard invite.opponentId == session.userId else {
+            throw MatchChallengeError.notFound
+        }
+        if invite.status == "expired" || invite.isExpired {
+            if invite.status == "pending" {
+                await markExpired(id: invite.id)
+            }
+            throw MatchChallengeError.expired
+        }
+        guard invite.status == "pending" else {
             throw MatchChallengeError.notFound
         }
         incomingChallenge = invite
@@ -295,7 +328,8 @@ final class MatchChallengeService: ObservableObject {
         return !rows.isEmpty
     }
 
-    private func cancelPending(challengerId: String, opponentId: String) async {
+    /// Cancels every pending invite this player has sent (new invite replaces old).
+    private func cancelAllOutgoingPending(challengerId: String) async {
         guard let body = try? JSONSerialization.data(withJSONObject: [
             "status": "cancelled",
             "updated_at": ISO8601DateFormatter().string(from: Date()),
@@ -303,8 +337,40 @@ final class MatchChallengeService: ObservableObject {
         _ = try? await SupabaseClient.shared.request(
             table: "match_challenges",
             method: "PATCH",
-            query: "challenger_id=eq.\(challengerId)&opponent_id=eq.\(opponentId)&status=eq.pending",
+            query: "challenger_id=eq.\(challengerId)&status=eq.pending",
             body: body)
+    }
+
+    private func markExpired(id: String) async {
+        guard let body = try? JSONSerialization.data(withJSONObject: [
+            "status": "expired",
+            "updated_at": ISO8601DateFormatter().string(from: Date()),
+        ]) else { return }
+        _ = try? await SupabaseClient.shared.request(
+            table: "match_challenges",
+            method: "PATCH",
+            query: "id=eq.\(id)&status=eq.pending",
+            body: body)
+    }
+
+    private func expireStaleChallengesOnServer() async {
+        _ = try? await SupabaseClient.shared.rpc("expire_stale_match_challenges")
+    }
+
+    private static let isoFractional: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+    private static let isoBasic: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
+
+    private static func parseDate(_ raw: String?) -> Date? {
+        guard let raw else { return nil }
+        return isoFractional.date(from: raw) ?? isoBasic.date(from: raw)
     }
 
     private func fetchChallenge(id: String) async throws -> MatchChallengeInvite? {
@@ -329,7 +395,9 @@ final class MatchChallengeService: ObservableObject {
             opponentUsername: opponentUsername ?? invite.opponentUsername,
             status: invite.status,
             seed: invite.seed,
-            matchId: invite.matchId)
+            matchId: invite.matchId,
+            createdAt: invite.createdAt,
+            updatedAt: invite.updatedAt)
     }
 
     private func username(for userId: String) async -> String? {
@@ -346,11 +414,17 @@ final class MatchChallengeService: ObservableObject {
                 table: "match_challenges",
                 query: "opponent_id=eq.\(userId)&status=eq.pending&order=created_at.desc&limit=1&select=*")
             guard let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]],
-                  let row = rows.first else {
+                  let row = rows.first,
+                  let invite = await enrichWithUsernames(parseChallenge(row, challengerUsername: nil, opponentUsername: nil)) else {
                 if incomingChallenge?.status == "pending" { incomingChallenge = nil }
                 return
             }
-            incomingChallenge = await enrichWithUsernames(parseChallenge(row, challengerUsername: nil, opponentUsername: nil))
+            if invite.isExpired {
+                await markExpired(id: invite.id)
+                if incomingChallenge?.id == invite.id { incomingChallenge = nil }
+                return
+            }
+            incomingChallenge = invite
         } catch {}
     }
 
@@ -358,16 +432,35 @@ final class MatchChallengeService: ObservableObject {
         do {
             if let pending = try await fetchLatestChallenge(
                 challengerId: userId, status: "pending") {
+                if pending.isExpired {
+                    await markExpired(id: pending.id)
+                    outgoingChallenge = MatchChallengeInvite(
+                        id: pending.id,
+                        challengerId: pending.challengerId,
+                        opponentId: pending.opponentId,
+                        challengerUsername: pending.challengerUsername,
+                        opponentUsername: pending.opponentUsername,
+                        status: "expired",
+                        seed: pending.seed,
+                        matchId: pending.matchId,
+                        createdAt: pending.createdAt)
+                    return
+                }
                 outgoingChallenge = pending
                 return
             }
 
+            // Only surface freshly accepted challenges. Stale accepts are marked
+            // started so login/signup doesn't auto-open a dead match.
             if let accepted = try await fetchLatestChallenge(
                 challengerId: userId, status: "accepted"),
                let matchId = accepted.matchId,
                !hasStartedMatch(matchId) {
-                outgoingChallenge = accepted
-                return
+                if accepted.isFreshlyAccepted {
+                    outgoingChallenge = accepted
+                    return
+                }
+                markMatchStarted(matchId)
             }
 
             if outgoingChallenge?.status == "pending" || outgoingChallenge?.status == "accepted" {
@@ -412,6 +505,8 @@ final class MatchChallengeService: ObservableObject {
             opponentUsername: opponentUsername ?? "Player",
             status: status,
             seed: seed,
-            matchId: row["match_id"] as? String)
+            matchId: row["match_id"] as? String,
+            createdAt: Self.parseDate(row["created_at"] as? String),
+            updatedAt: Self.parseDate(row["updated_at"] as? String))
     }
 }

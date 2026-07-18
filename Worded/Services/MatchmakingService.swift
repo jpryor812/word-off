@@ -24,8 +24,8 @@ enum QuickMatchSearchResult: Equatable {
     // case aiFallback // older auto-AI path
 }
 
-/// Searches the Supabase matchmaking queue for a human opponent until paired,
-/// cancelled, or the player opts into AI. Runs while browsing the rest of the app.
+/// Searches the Supabase matchmaking queue for a human opponent until paired
+/// or cancelled. Never falls back to AI — that is a separate Play AI button.
 @MainActor
 final class MatchmakingService: ObservableObject {
     @Published private(set) var isSearching = false

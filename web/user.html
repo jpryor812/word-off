@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Challenge on Worded</title>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #21525f;
+      color: #fff;
+      text-align: center;
+      padding: 24px;
+    }
+    a.button {
+      display: inline-block;
+      margin-top: 20px;
+      padding: 14px 22px;
+      border-radius: 14px;
+      background: #f28f30;
+      color: #fff;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    p { opacity: 0.9; max-width: 28rem; line-height: 1.45; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Worded</h1>
+    <p id="msg">Opening Worded…</p>
+    <p>
+      <a class="button" id="store" href="https://testflight.apple.com/join/YOUR_CODE">
+        Get Worded
+      </a>
+    </p>
+  </main>
+  <script>
+    const parts = location.pathname.split("/").filter(Boolean);
+    const user = parts[0] === "user" ? decodeURIComponent(parts[1] || "") : "";
+    if (user) {
+      document.getElementById("msg").textContent =
+        `Challenge ${user} in Worded. If the app doesn’t open, install it and tap the link again.`;
+    }
+  </script>
+</body>
+</html>

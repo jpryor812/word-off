@@ -35,3 +35,6 @@ targets:
       properties:
         com.apple.developer.applesignin:
           - Default
+        com.apple.developer.associated-domains:
+          - applinks:worded.app
+          - applinks:www.worded.app

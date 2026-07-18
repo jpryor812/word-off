@@ -1,7 +1,7 @@
 import Foundation
 
-/// Hidden AI opponent used when the player chooses Play AI (or offline).
-/// Skill tier 1–10 controls word strength and submission speed.
+/// AI opponent used only when the player explicitly taps Play AI.
+/// Skill tier 1–10 controls bingo frequency, word length, and submission speed.
 struct AIOpponent {
     let username: String
     let tier: Int
@@ -27,60 +27,102 @@ struct AIOpponent {
         return AIOpponent(username: name, tier: clamped)
     }
 
+    /// How many full-rack (8-letter) words this AI may play across a match.
+    static func bingoQuota(for tier: Int) -> Int {
+        switch min(10, max(1, tier)) {
+        case 10: return 99          // essentially every round
+        case 9: return Int.random(in: 3...4)
+        case 7, 8: return Int.random(in: 1...3)
+        case 5, 6: return Int.random(in: 0...2)
+        default: return 0           // tier 1–4: never
+        }
+    }
+
     /// Picks a word and submission time for the given rack.
-    /// - Returns: nil word on a whiff (low tiers sometimes fail entirely).
-    func play(rack: [Character]) -> (word: String?, submitAt: TimeInterval) {
+    /// - Parameter allowBingo: when false, never play an 8-letter word.
+    /// Always submits a word when any buildable option exists.
+    func play(rack: [Character], allowBingo: Bool) -> (word: String?, submitAt: TimeInterval) {
         let candidates = WordDictionary.shared.buildableWords(from: rack)
         guard !candidates.isEmpty else {
             return (nil, TimeInterval(GameConstants.roundSeconds))
         }
 
-        // Only the easiest difficulties whiff; 5+ almost never blank a round.
-        let whiffChance = max(0.0, 0.22 - Double(tier) * 0.045)
-        if Double.random(in: 0...1) < whiffChance {
-            return (nil, TimeInterval(GameConstants.roundSeconds))
-        }
-
-        let ranked = candidates
-            .map { word -> (String, Int) in
-                (word, Scoring.score(word: word, rackSize: rack.count, firstSubmit: false).total)
-            }
-            .sorted { $0.1 > $1.1 }
-
-        let chosen = pickWord(from: ranked)
-
-        // Higher tiers submit early to contest the +1 speed bonus.
-        // Tier 1 ≈ 16s, tier 7 ≈ 5.5s, tier 10 ≈ 3s.
-        let base = 17.5 - Double(tier) * 1.45
-        let submitAt = min(Double(GameConstants.roundSeconds) - 0.5,
-                           max(2.5, base + Double.random(in: -1.2...1.2)))
-        return (chosen, submitAt)
+        let chosen = pickWord(from: candidates, rackSize: rack.count, allowBingo: allowBingo)
+        return (chosen, submitTime())
     }
 
-    /// Stronger curve than before: mid/high tiers stay near the top of the
-    /// scored word list instead of drifting into mediocre mid-pack words.
-    private func pickWord(from ranked: [(String, Int)]) -> String {
-        let last = max(ranked.count - 1, 0)
-        guard last > 0 else { return ranked[0].0 }
+    // MARK: - Word selection
 
-        let t = Double(tier) / 10.0
-        // Lift mid tiers (7/10 used to feel like ~4/10).
-        let skill = pow(t, 0.55)
+    private func pickWord(from candidates: [String], rackSize: Int, allowBingo: Bool) -> String {
+        let bingos = candidates.filter { $0.count >= rackSize }
+        let nonBingos = candidates.filter { $0.count < rackSize }
 
-        // Often just take the best available word at higher difficulties.
-        let snapBestChance = min(0.92, skill * skill * 1.15)
-        if Double.random(in: 0...1) < snapBestChance {
-            return ranked[0].0
+        if allowBingo, !bingos.isEmpty {
+            return pickScored(from: bingos, preferTop: tier >= 9)
         }
 
-        // Otherwise pick inside a narrow top band that shrinks with skill.
-        // Tier 1: ~top 40–85%. Tier 7: ~top 0–12%. Tier 10: ~top 0–4%.
-        let bandTop = (1.0 - skill) * 0.40
-        let bandWidth = max(0.03, 0.50 - skill * 0.48)
-        let bandBottom = min(0.95, bandTop + bandWidth)
+        let (minLen, maxLen) = nonBingoLengthRange
+        var pool = nonBingos.filter { $0.count >= minLen && $0.count <= maxLen }
+        if pool.isEmpty {
+            // Fall back to anything shorter than a bingo, then anything at all.
+            pool = nonBingos
+        }
+        if pool.isEmpty {
+            return pickScored(from: candidates, preferTop: false)
+        }
+        return pickScored(from: pool, preferTop: tier >= 7)
+    }
 
+    /// Preferred lengths when not playing a full-rack bingo.
+    private var nonBingoLengthRange: (Int, Int) {
+        switch tier {
+        case 10: return (7, 7)
+        case 9: return (6, 7)
+        case 7, 8: return (5, 7)
+        case 5, 6: return (4, 7)
+        case 3, 4: return (4, 6)
+        default: return (4, 5) // tier 1–2
+        }
+    }
+
+    private func pickScored(from words: [String], preferTop: Bool) -> String {
+        let ranked = words
+            .map { word -> (String, Int) in
+                (word, Scoring.score(word: word, rackSize: GameConstants.pvpRackSize, firstSubmit: false).total)
+            }
+            .sorted { $0.1 > $1.1 }
+        guard ranked.count > 1 else { return ranked[0].0 }
+
+        if preferTop {
+            // Top 1–3 by score.
+            let top = min(3, ranked.count) - 1
+            return ranked[Int.random(in: 0...top)].0
+        }
+
+        // Mild randomness inside the length band — stronger tiers stay higher.
+        let t = Double(tier) / 10.0
+        let bandTop = (1.0 - t) * 0.35
+        let bandWidth = max(0.15, 0.55 - t * 0.35)
+        let last = ranked.count - 1
         let lower = Int((bandTop * Double(last)).rounded(.down))
-        let upper = max(lower, Int((bandBottom * Double(last)).rounded(.down)))
+        let upper = max(lower, Int((min(0.95, bandTop + bandWidth) * Double(last)).rounded(.down)))
         return ranked[Int.random(in: lower...upper)].0
+    }
+
+    // MARK: - Speed
+
+    /// Tier 10 is brisk; 9 is slower; mid tiers vary widely.
+    private func submitTime() -> TimeInterval {
+        let range: ClosedRange<Double>
+        switch tier {
+        case 10: range = 5.0...10.0
+        case 9: range = 7.0...16.0
+        case 7, 8: range = 5.0...16.5
+        case 5, 6: range = 7.0...18.0
+        case 3, 4: range = 10.0...20.0
+        default: range = 12.0...22.0
+        }
+        let raw = Double.random(in: range)
+        return min(Double(GameConstants.roundSeconds) - 0.5, max(2.2, raw))
     }
 }

@@ -11,6 +11,8 @@ final class DailyEngine: ObservableObject {
         case go
         case playing
         case rackDone          // brief score interstitial between racks
+        /// Practice rack finished — waiting for the “start real daily” callout.
+        case practiceComplete
         case finished
     }
 
@@ -25,6 +27,11 @@ final class DailyEngine: ObservableObject {
     @Published var lastBreakdown: ScoreBreakdown?
     @Published var satOut = false
     @Published var submissionFeedback: String?
+    /// True while the non-scoring onboarding practice rack is active.
+    @Published private(set) var isPracticeRound = false
+    /// Last practice score for the interstitial (never written to daily results).
+    @Published private(set) var practiceScore: Int = 0
+    @Published private(set) var practiceWord: String?
 
     let day: String
     /// Fixed size 5–10, or `GameConstants.ladderDailySentinel` for The Ladder.
@@ -55,20 +62,62 @@ final class DailyEngine: ObservableObject {
         beginRack()
     }
 
-    private func beginRack() {
+    /// Shows a static flipped rack so tutorial callouts can highlight letter points
+    /// before the practice round starts.
+    func prepareTutorialDemoRack() {
+        isPracticeRound = false
         typedWord = ""
         lockedWord = nil
         satOut = false
         lastBreakdown = nil
         submissionFeedback = nil
-        let size = currentRoundLetterCount
+        practiceScore = 0
+        practiceWord = nil
+        rack = DailySeed.practiceRack(day: day, rackSize: rackSize)
+        roundDuration = GameConstants.dailySeconds(forRackSize: rackSize)
+        secondsLeft = roundDuration
+        phase = .intro
+    }
+
+    /// Starts the non-scoring onboarding practice rack.
+    func startPracticeRound() {
+        isPracticeRound = true
+        rackIndex = 0
+        roundScores = []
+        words = []
+        practiceScore = 0
+        practiceWord = nil
+        beginRack(practice: true)
+    }
+
+    /// Starts the real daily after practice (or when skipping tutorial).
+    func startRealPuzzle() {
+        isPracticeRound = false
+        practiceScore = 0
+        practiceWord = nil
+        rackIndex = 0
+        roundScores = []
+        words = []
+        beginRack(practice: false)
+    }
+
+    private func beginRack(practice: Bool = false) {
+        typedWord = ""
+        lockedWord = nil
+        satOut = false
+        lastBreakdown = nil
+        submissionFeedback = nil
+        let size = practice ? rackSize : currentRoundLetterCount
         roundDuration = GameConstants.dailySeconds(forRackSize: size)
         secondsLeft = roundDuration
-        rack = DailySeed.rack(day: day, rackSize: rackSize, round: rackIndex)
+        rack = practice
+            ? DailySeed.practiceRack(day: day, rackSize: rackSize)
+            : DailySeed.rack(day: day, rackSize: rackSize, round: rackIndex)
         phase = .flipping
         SoundPlayer.shared.play(.whoosh)
         Task {
-            try? await Task.sleep(for: .seconds(1.6))
+            // Slide in (~0.75s) + pause, then flip face-up.
+            try? await Task.sleep(for: .seconds(RackView.slideTotalDuration + 0.5))
             SoundPlayer.shared.play(.flip)
             phase = .go
             haptics.impact()
@@ -151,6 +200,13 @@ final class DailyEngine: ObservableObject {
 
     private func endRack() {
         timerTask?.cancel()
+
+        if isPracticeRound {
+            scorePracticeRack()
+            phase = .practiceComplete
+            return
+        }
+
         scoreCurrentRack()
 
         if rackIndex + 1 >= totalRounds {
@@ -186,10 +242,35 @@ final class DailyEngine: ObservableObject {
         SoundPlayer.shared.play(score > 0 ? .win : .lose)
     }
 
+    private func scorePracticeRack() {
+        var word = lockedWord
+        if word == nil, !satOut {
+            let typed = typedWord.trimmingCharacters(in: .whitespaces).uppercased()
+            if !typed.isEmpty { word = typed }
+        }
+
+        var score = 0
+        if let word, WordDictionary.shared.validate(word: word, rack: rack) {
+            let breakdown = Scoring.score(word: word, rackSize: rack.count, firstSubmit: false)
+            score = breakdown.total
+            lastBreakdown = breakdown
+            practiceWord = word
+        } else {
+            practiceWord = word.map { $0 + " ✕" }
+        }
+        practiceScore = score
+        SoundPlayer.shared.play(score > 0 ? .win : .lose)
+    }
+
     /// Player chose to leave mid-puzzle. Locks in the current rack's score and
     /// fills any remaining racks with zero so the result still saves and counts.
+    /// Practice rounds are abandoned with no persisted score.
     func exitEarly() {
         timerTask?.cancel()
+        if isPracticeRound {
+            isPracticeRound = false
+            return
+        }
         if phase == .playing { scoreCurrentRack() }
         while roundScores.count < totalRounds {
             roundScores.append(0)

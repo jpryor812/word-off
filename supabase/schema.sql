@@ -10,6 +10,7 @@ create table if not exists public.profiles (
   country text,
   is_premium boolean not null default false,
   badge_stats jsonb not null default '{}'::jsonb,
+  last_seen_at timestamptz,
   created_at timestamptz not null default now()
 );
 
@@ -75,6 +76,10 @@ create policy "users send requests"
 
 create policy "addressee accepts"
   on public.friendships for update using (auth.uid() = addressee);
+
+create policy "participants delete friendships"
+  on public.friendships for delete
+  using (auth.uid() = requester or auth.uid() = addressee);
 
 -- =========================================================================
 -- Matchmaking queue + matches (for human PvP; v1 client falls back to AI)
@@ -160,6 +165,29 @@ create policy "participants write own submissions"
   ));
 
 -- =========================================================================
+-- APNs device tokens (remote push for challenges / friend requests)
+-- =========================================================================
+create table if not exists public.device_tokens (
+  user_id uuid not null references public.profiles (id) on delete cascade,
+  token text not null,
+  platform text not null default 'ios',
+  environment text not null default 'production'
+    check (environment in ('sandbox', 'production')),
+  updated_at timestamptz not null default now(),
+  primary key (user_id, token)
+);
+
+create index if not exists device_tokens_user
+  on public.device_tokens (user_id);
+
+alter table public.device_tokens enable row level security;
+
+create policy "users manage own device tokens"
+  on public.device_tokens for all
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+-- =========================================================================
 -- Friend challenges (username → accept/reject → human match)
 -- =========================================================================
 create table if not exists public.match_challenges (
@@ -200,6 +228,32 @@ create policy "participants insert matches"
 create policy "participants update matches"
   on public.matches for update
   using (auth.uid() = player_a or auth.uid() = player_b);
+
+create index if not exists match_challenges_pending_created
+  on public.match_challenges (created_at)
+  where status = 'pending';
+
+create or replace function public.expire_stale_match_challenges()
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  n integer;
+begin
+  update public.match_challenges
+  set status = 'expired',
+      updated_at = now()
+  where status = 'pending'
+    and created_at < now() - interval '6 hours';
+  get diagnostics n = row_count;
+  return n;
+end;
+$$;
+
+revoke all on function public.expire_stale_match_challenges() from public;
+grant execute on function public.expire_stale_match_challenges() to authenticated;
 
 -- =========================================================================
 -- Account deletion (App Store 5.1.1(v))

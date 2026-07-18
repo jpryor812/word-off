@@ -561,6 +561,7 @@ private struct AnchoredOnboardingCallout: View {
         case .dailyPremiumPitch: return "Top Words & Premium"
         case .quickMatch: return "Play Online"
         case .inviteFriend: return "Challenge a Friend"
+        case .someoneWaitingSettings: return ""
         case .homePlayFreely: return ""
         }
     }
@@ -570,7 +571,7 @@ private struct AnchoredOnboardingCallout: View {
         case .twoWaysToPlay:
             return ""
         case .startSixLetterDaily:
-            return "Four rounds of 24 seconds each to build the highest scoring points possible."
+            return "We'll start with a quick practice round, then four real rounds to build the highest score you can."
         case .dailyLeaderboard:
             return "Check out how you performed against other players around the world."
         case .dailyPremiumPitch:
@@ -579,8 +580,66 @@ private struct AnchoredOnboardingCallout: View {
             return "Play against another player from around the world in a quickfire best of 7 series."
         case .inviteFriend:
             return "Challenge a friend by username or invite them via text."
-        case .homePlayFreely:
+        case .someoneWaitingSettings, .homePlayFreely:
             return ""
+        }
+    }
+}
+
+/// First Play Online: explain PvP rules before search starts.
+struct OnlineRulesIntroOverlay: View {
+    var onNext: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.5).ignoresSafeArea()
+            VStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Online games")
+                        .font(.system(.title3, design: .rounded).weight(.black))
+                        .foregroundColor(Theme.tileText)
+                    Text("In online games, you get 8 letters and only one submission for your highest scoring word in a best-of-seven series. The person who submits first gets a one-point speed bonus.")
+                        .font(.system(.subheadline, design: .rounded))
+                        .foregroundColor(Theme.tileText.opacity(0.75))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Next", action: onNext)
+                        .buttonStyle(PrimaryButtonStyle())
+                }
+                .padding(22)
+                .background(RoundedRectangle(cornerRadius: 16).fill(Theme.panel))
+                .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
+                .frame(maxWidth: 360)
+            }
+            .padding(.horizontal, 24)
+        }
+    }
+}
+
+/// Card shown after Play Online search starts — then triggers the OS notification prompt.
+struct MatchmakingNotifyIntroOverlay: View {
+    var onNext: () -> Void
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.5).ignoresSafeArea()
+            VStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Finding a match")
+                        .font(.system(.title3, design: .rounded).weight(.black))
+                        .foregroundColor(Theme.tileText)
+                    Text("Sometimes finding an online game can take a minute or two. You can leave the app or play daily challenges while we search, and we’ll notify you when we find a player.")
+                        .font(.system(.subheadline, design: .rounded))
+                        .foregroundColor(Theme.tileText.opacity(0.75))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button("Next", action: onNext)
+                        .buttonStyle(PrimaryButtonStyle())
+                }
+                .padding(22)
+                .background(RoundedRectangle(cornerRadius: 16).fill(Theme.panel))
+                .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
+                .frame(maxWidth: 360)
+            }
+            .padding(.horizontal, 24)
         }
     }
 }
@@ -624,24 +683,31 @@ struct FriendChallengeContent: View {
     @Binding var username: String
     let busy: Bool
     let errorMessage: String?
+    var statusMessage: String? = nil
     var onChallenge: (String) -> Void
+    var onAddFriend: ((String) -> Void)? = nil
     var showsLocalModeNote: Bool = true
+    var showsFriendsList: Bool = true
+
+    private var trimmedUsername: String {
+        username.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var body: some View {
         VStack(spacing: 18) {
-            Text("Challenge a friend by username, or invite them via text.")
+            Text("Challenge someone by username, add them as a friend, or invite via text.")
                 .font(.system(.subheadline, design: .rounded))
                 .foregroundColor(.white)
                 .multilineTextAlignment(.center)
 
             if showsLocalModeNote && app.isLocalMode {
-                Text("Sign in for in-app challenges. Text invites still work.")
+                Text("Sign in for in-app challenges and friends. Text invites still work.")
                     .font(.system(.caption, design: .rounded).weight(.bold))
                     .foregroundColor(Theme.accent)
                     .multilineTextAlignment(.center)
             }
 
-            TextField("Friend's username", text: $username)
+            TextField("Username", text: $username)
                 .textFieldStyle(.roundedBorder)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -652,13 +718,32 @@ struct FriendChallengeContent: View {
                     .font(.system(.caption, design: .rounded).weight(.bold))
                     .foregroundColor(Theme.lose)
                     .multilineTextAlignment(.center)
+            } else if let statusMessage {
+                Text(statusMessage)
+                    .font(.system(.caption, design: .rounded).weight(.bold))
+                    .foregroundColor(Theme.win)
+                    .multilineTextAlignment(.center)
             }
 
-            Button("Send Challenge") {
-                onChallenge(username.trimmingCharacters(in: .whitespacesAndNewlines))
+            HStack(spacing: 10) {
+                Button {
+                    onChallenge(trimmedUsername)
+                } label: {
+                    Text("Challenge")
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(trimmedUsername.count < 3 || busy || app.isLocalMode)
+
+                if let onAddFriend {
+                    Button {
+                        onAddFriend(trimmedUsername)
+                    } label: {
+                        Text("Add Friend")
+                    }
+                    .buttonStyle(PrimaryButtonStyle(color: Theme.backgroundLight))
+                    .disabled(trimmedUsername.count < 3 || busy || app.isLocalMode)
+                }
             }
-            .buttonStyle(PrimaryButtonStyle())
-            .disabled(username.count < 3 || busy || app.isLocalMode)
 
             ShareLink(
                 item: ChallengeInviteLink.profileShareMessage(username: app.username),
@@ -672,6 +757,122 @@ struct FriendChallengeContent: View {
                 .font(.system(.caption, design: .rounded))
                 .foregroundColor(Theme.subtleText)
                 .multilineTextAlignment(.center)
+
+            if showsFriendsList {
+                friendsList
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var friendsList: some View {
+        let friends = app.friendsService.friends
+        VStack(alignment: .leading, spacing: 10) {
+            Text("FRIENDS")
+                .font(.system(.caption, design: .rounded).weight(.black))
+                .foregroundColor(Theme.subtleText)
+
+            if app.isLocalMode {
+                Text("Sign in to see your friends.")
+                    .font(.system(.caption, design: .rounded))
+                    .foregroundColor(Theme.subtleText)
+            } else if friends.isEmpty {
+                Text("No friends yet — add someone by username after a match.")
+                    .font(.system(.caption, design: .rounded))
+                    .foregroundColor(Theme.subtleText)
+            } else {
+                ForEach(friends) { friend in
+                    HStack(spacing: 10) {
+                        Circle()
+                            .fill(friend.isOnline ? Theme.win : Color.gray.opacity(0.45))
+                            .frame(width: 10, height: 10)
+                        Text(friend.username)
+                            .font(.system(.subheadline, design: .rounded).weight(.bold))
+                            .foregroundColor(.white)
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        Button("Challenge") {
+                            onChallenge(friend.username)
+                        }
+                        .font(.system(.caption, design: .rounded).weight(.bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(Capsule().fill(Theme.accent))
+                        .disabled(busy)
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 4)
+    }
+}
+
+// MARK: - Daily play rules + practice tutorial
+
+/// Inline callout under the demo rack (pre-practice) or practice result.
+struct DailyPlayTutorialCard: View {
+    let step: DailyPlayTutorialStep
+    var onAdvance: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(.system(.title3, design: .rounded).weight(.black))
+                .foregroundColor(Theme.tileText)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(bodyText)
+                .font(.system(.subheadline, design: .rounded))
+                .foregroundColor(Theme.tileText.opacity(0.75))
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button(buttonTitle, action: onAdvance)
+                .buttonStyle(PrimaryButtonStyle())
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 16).fill(Theme.panel))
+        .shadow(color: .black.opacity(0.2), radius: 12, y: 4)
+    }
+
+    private var title: String {
+        switch step {
+        case .rulesOverview: return "Welcome to Worded"
+        case .letterPoints: return "Letter points"
+        case .submitRules: return "Lock in your word"
+        case .fourRounds: return "Four rounds"
+        case .startPractice: return "Practice first"
+        case .practicePlaying: return ""
+        case .readyForReal: return "Nice job!"
+        }
+    }
+
+    private var bodyText: String {
+        switch step {
+        case .rulesOverview:
+            return "Worded is a game where you make the highest scoring words out of scrambled letters."
+        case .letterPoints:
+            return "Points come from the values on each tile, not how many letters you use. You can submit a shorter word if that’s all you can find, though using every letter maximizes your score."
+        case .submitRules:
+            return "In daily challenges, you type a word and hit submit to lock it in, but if you think of a better word before time runs out, you can submit a new one."
+        case .fourRounds:
+            return "There will be four rounds for daily challenges of different letters. I wonder if you can get a perfect score on all four!"
+        case .startPractice:
+            return "First, let's start with a practice round."
+        case .practicePlaying:
+            return ""
+        case .readyForReal:
+            return "Nice job, now let's get into the real 6-letter daily challenge. Good luck!"
+        }
+    }
+
+    private var buttonTitle: String {
+        switch step {
+        case .startPractice: return "Start Practice"
+        case .readyForReal: return "Start"
+        default: return "Next"
         }
     }
 }
@@ -700,7 +901,8 @@ struct OnboardingInviteCard: View {
                 username: $username,
                 busy: app.isWaitingForChallengeAccept,
                 errorMessage: errorMessage,
-                onChallenge: onChallenge)
+                onChallenge: onChallenge,
+                showsFriendsList: false)
         }
         .padding(24)
         .background(RoundedRectangle(cornerRadius: 20).fill(Theme.backgroundLight))

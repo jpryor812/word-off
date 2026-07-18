@@ -33,11 +33,11 @@ enum LegalCopy {
 
     Account information. If you sign in with Sign in with Apple, we receive an identifier from Apple so we can keep you signed in. Apple may provide a name or email depending on the options you choose in Apple’s Sign in with Apple sheet. You also choose a username (and optionally a country) in the App.
 
-    Gameplay data. We store game-related data needed to run the App, such as match results, daily challenge scores, leaderboard entries, lives/streaks, badge progress, and friend challenge state. If online features are enabled, this data may be stored on our cloud database (Supabase) associated with your account.
+    Gameplay data. We store game-related data needed to run the App, such as match results, daily challenge scores, leaderboard entries, lives/streaks, badge progress, friendships, friend requests, and friend challenge state. If online features are enabled, this data may be stored on our cloud database (Supabase) associated with your account. A rough “last active” timestamp may be stored so friends can see when you are online in the App.
 
     Device preferences. Settings you choose in the App (for example notification, sound, and haptic preferences) are stored on your device.
 
-    Notifications. If you allow notifications, the App may schedule local reminders on your device (for example a daily challenge reminder, or an optional alert when another player is waiting for a Quick Match). These reminders are managed on your device unless we later add optional remote push notifications, in which case this policy will be updated.
+    Notifications. If you allow notifications, the App may schedule local reminders on your device (for example a daily challenge reminder, or an optional alert when another player is waiting for a Quick Match). With your permission, we may also send remote push notifications for social events such as friend challenges and friend requests. Remote push uses an Apple device token stored with your account so we can deliver those alerts when the App is not open. You can turn notifications off in the App’s Settings or in iOS Settings.
 
     2. How we use information
 
@@ -131,7 +131,7 @@ enum LegalCopy {
 
     7. Notifications
 
-    With your permission, the App may send notifications, including a daily challenge reminder and an optional alert when someone is waiting for a Quick Match. You can turn these off in the App’s Settings or in iOS Settings. Optional Quick Match waiting alerts are limited so we do not send more than one per hour.
+    With your permission, the App may send notifications, including a daily challenge reminder, an optional alert when someone is waiting for a Quick Match, and remote push alerts for friend challenges and friend requests. You can turn these off in the App’s Settings or in iOS Settings. Optional Quick Match waiting alerts are limited so we do not send more than one per hour.
 
     8. Intellectual property
 

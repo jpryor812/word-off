@@ -37,6 +37,8 @@ struct TileView: View {
     let letter: Character
     var size: CGFloat = 44
     var flipped: Bool = true
+    /// Emphasize the Scrabble point value (onboarding teach).
+    var highlightPoints: Bool = false
 
     var body: some View {
         ZStack {
@@ -49,8 +51,14 @@ struct TileView: View {
                     .foregroundColor(Theme.tileText)
                 if let value = LetterBag.values[letter] {
                     Text("\(value)")
-                        .font(.system(size: size * 0.22, weight: .bold, design: .rounded))
-                        .foregroundColor(Theme.tileText.opacity(0.65))
+                        .font(.system(size: size * (highlightPoints ? 0.28 : 0.22), weight: .bold, design: .rounded))
+                        .foregroundColor(highlightPoints ? Theme.accentDark : Theme.tileText.opacity(0.65))
+                        .padding(highlightPoints ? 3 : 0)
+                        .background {
+                            if highlightPoints {
+                                Circle().fill(Theme.accent.opacity(0.35))
+                            }
+                        }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                         .padding(.top, size * 0.06)
                         .padding(.trailing, size * 0.08)
@@ -58,6 +66,12 @@ struct TileView: View {
             }
         }
         .frame(width: size, height: size)
+        .overlay {
+            if highlightPoints {
+                RoundedRectangle(cornerRadius: size * 0.18)
+                    .stroke(Theme.accent, lineWidth: 2.5)
+            }
+        }
         .rotation3DEffect(.degrees(flipped ? 0 : 180), axis: (x: 0, y: 1, z: 0))
     }
 }
@@ -70,12 +84,17 @@ struct BadgeTileView: View {
     var prestige: Int? = nil
     var size: CGFloat = 44
     var dimmed: Bool = false
+    /// Stronger gold stroke for pre-game matchup badges on dark backgrounds.
+    var strongGoldBorder: Bool = false
 
     private static let goldBorder = Color(red: 0.85, green: 0.68, blue: 0.18)
 
     var body: some View {
         let locked = dimmed || prestige == nil
         let corner = size * 0.18
+        let borderWidth = strongGoldBorder
+            ? max(2.0, size * 0.07)
+            : max(1.5, size * 0.045)
         ZStack {
             RoundedRectangle(cornerRadius: corner)
                 .fill(locked ? Theme.tileFace.opacity(0.5) : Theme.tileFace)
@@ -84,7 +103,7 @@ struct BadgeTileView: View {
                     RoundedRectangle(cornerRadius: corner)
                         .strokeBorder(
                             Self.goldBorder.opacity(locked ? 0.35 : 1),
-                            lineWidth: max(1.5, size * 0.045))
+                            lineWidth: borderWidth)
                 )
 
             Image(systemName: icon)
@@ -110,32 +129,81 @@ struct RackView: View {
     var tileSize: CGFloat = 38
     /// Number of rows to wrap the tiles into (used for large daily racks).
     var wrapRows: Int = 1
+    /// When true, tiles slide in from off-screen left (~0.75s), then `flipped` handles the reveal.
+    var slideIn: Bool = false
+    /// Highlight Scrabble points on these letters (onboarding practice teach).
+    var highlightPointLetters: Set<Character> = []
+
+    @State private var settled = true
 
     private var spacing: CGFloat { tileSize < 30 ? 3 : 5 }
+    static let slideTotalDuration: Double = 0.75
+    private static let perTileDuration: Double = 0.55
 
     var body: some View {
-        if wrapRows <= 1 {
-            row(Array(rack.indices))
-        } else {
-            let perRow = Int(ceil(Double(rack.count) / Double(wrapRows)))
-            VStack(spacing: spacing) {
-                ForEach(0..<wrapRows, id: \.self) { r in
-                    let start = r * perRow
-                    let end = min(start + perRow, rack.count)
-                    if start < end {
-                        row(Array(start..<end))
+        Group {
+            if wrapRows <= 1 {
+                row(Array(rack.indices), rowStart: 0)
+            } else {
+                let perRow = Int(ceil(Double(rack.count) / Double(wrapRows)))
+                VStack(spacing: spacing) {
+                    ForEach(0..<wrapRows, id: \.self) { r in
+                        let start = r * perRow
+                        let end = min(start + perRow, rack.count)
+                        if start < end {
+                            row(Array(start..<end), rowStart: start)
+                        }
                     }
                 }
             }
         }
+        .onAppear { runSlideInIfNeeded(force: slideIn) }
+        .onChange(of: slideIn) { _, active in
+            runSlideInIfNeeded(force: active)
+        }
     }
 
-    private func row(_ indices: [Int]) -> some View {
+    private func row(_ indices: [Int], rowStart: Int) -> some View {
         HStack(spacing: spacing) {
-            ForEach(indices, id: \.self) { i in
-                TileView(letter: rack[i], size: tileSize, flipped: flipped)
+            ForEach(Array(indices.enumerated()), id: \.element) { order, i in
+                let staggerIndex = rowStart + order
+                TileView(
+                    letter: rack[i],
+                    size: tileSize,
+                    flipped: flipped,
+                    highlightPoints: highlightPointLetters.contains(rack[i]))
+                    .offset(x: settled ? 0 : slideStartX(for: staggerIndex))
+                    .animation(slideAnimation(for: staggerIndex), value: settled)
+                    .animation(.easeInOut(duration: 0.35), value: flipped)
+                    .animation(.easeInOut(duration: 0.25), value: highlightPointLetters)
             }
         }
+    }
+
+    /// Far enough left that the whole rack starts off-screen.
+    private func slideStartX(for index: Int) -> CGFloat {
+        let rackWidth = CGFloat(rack.count) * (tileSize + spacing)
+        return -(rackWidth + 120 + CGFloat(index) * 12)
+    }
+
+    private func slideAnimation(for index: Int) -> Animation {
+        let count = max(rack.count - 1, 1)
+        // Light stagger so they still read as a pack sliding in together.
+        let maxDelay = max(0, Self.slideTotalDuration - Self.perTileDuration)
+        let delay = maxDelay * Double(index) / Double(count)
+        return .easeOut(duration: Self.perTileDuration).delay(delay)
+    }
+
+    private func runSlideInIfNeeded(force: Bool) {
+        guard force else {
+            settled = true
+            return
+        }
+        // Snap off-screen, then ease in with per-tile stagger (see slideAnimation).
+        var reset = Transaction()
+        reset.disablesAnimations = true
+        withTransaction(reset) { settled = false }
+        settled = true
     }
 }
 

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Replace APP_STORE_ID once the app is on the App Store. -->
+  <!-- <meta name="apple-itunes-app" content="app-id=APP_STORE_ID"> -->
+  <title>Worded Challenge</title>
+  <style>
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #21525f;
+      color: #fff;
+      text-align: center;
+      padding: 24px;
+    }
+    a.button {
+      display: inline-block;
+      margin-top: 20px;
+      padding: 14px 22px;
+      border-radius: 14px;
+      background: #f28f30;
+      color: #fff;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    p { opacity: 0.9; max-width: 28rem; line-height: 1.45; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Worded</h1>
+    <p id="msg">Opening your challenge…</p>
+    <p>
+      <!-- Before App Store launch: put a public TestFlight link here. -->
+      <a class="button" id="store" href="https://testflight.apple.com/join/YOUR_CODE">
+        Get Worded
+      </a>
+    </p>
+  </main>
+  <script>
+    // If the app is installed, iOS usually opens it via Universal Links
+    // before this page matters. If not, show download / TestFlight.
+    const parts = location.pathname.split("/").filter(Boolean);
+    const id = parts[0] === "challenge" ? parts[1] : null;
+    if (id) {
+      document.getElementById("msg").textContent =
+        "This challenge invite opens in Worded. If nothing happens, install the app and try the link again.";
+    }
+    // Optional: after publish, point store button at the App Store:
+    // document.getElementById("store").href = "https://apps.apple.com/app/idAPP_STORE_ID";
+  </script>
+</body>
+</html>

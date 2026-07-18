@@ -79,8 +79,10 @@ struct BadgeAvatarView: View {
             ForEach(Array(badges.enumerated()), id: \.element.id) { index, badge in
                 BadgeTileView(
                     icon: badge.kind.icon,
-                    prestige: badge.prestigeLevel,
-                    size: 30)
+                    prestige: max(1, badge.prestigeLevel),
+                    size: 32,
+                    dimmed: false,
+                    strongGoldBorder: true)
                 .offset(badgeOffset(index: index, count: badges.count))
                 .accessibilityLabel(badge.title)
             }

@@ -9,26 +9,47 @@ struct SettingsView: View {
     @State private var deleteBusy = false
     @State private var deleteError: String?
 
+    /// Onboarding tour: focus someone-waiting prefs and show a Done CTA.
+    var someoneWaitingOnboarding: Bool = false
+    var onSomeoneWaitingOnboardingDone: (() -> Void)? = nil
+
     var body: some View {
         NavigationStack {
             ZStack {
                 Theme.background.ignoresSafeArea()
                 ScrollView {
                     VStack(spacing: 16) {
+                        if someoneWaitingOnboarding {
+                            onboardingBanner
+                        }
                         notificationsCard
-                        feedbackCard
-                        legalCard
-                        accountCard
-                        versionFooter
+                        if !someoneWaitingOnboarding {
+                            feedbackCard
+                            legalCard
+                            accountCard
+                            versionFooter
+                        } else {
+                            Button("Done") {
+                                onSomeoneWaitingOnboardingDone?()
+                                dismiss()
+                            }
+                            .buttonStyle(PrimaryButtonStyle())
+                            .padding(.top, 8)
+                        }
                     }
                     .padding()
                 }
             }
-            .navigationTitle("Settings")
+            .navigationTitle(someoneWaitingOnboarding ? "Notifications" : "Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
+                    Button(someoneWaitingOnboarding ? "Done" : "Close") {
+                        if someoneWaitingOnboarding {
+                            onSomeoneWaitingOnboardingDone?()
+                        }
+                        dismiss()
+                    }
                 }
             }
             .sheet(item: $legalDocument) { doc in
@@ -37,7 +58,10 @@ struct SettingsView: View {
             .onChange(of: settings.notificationsEnabled) { _, enabled in
                 Task {
                     if enabled {
-                        await MatchmakingNotifications.requestAuthorizationIfNeeded()
+                        await MatchmakingNotifications.requestOrOpenSettingsIfDenied()
+                        await PushRegistration.requestAuthorizationAndRegister()
+                    } else {
+                        await PushRegistration.clearTokenFromServer()
                     }
                     await app.refreshDailyReminderNotification()
                 }
@@ -45,7 +69,14 @@ struct SettingsView: View {
             }
             .onChange(of: settings.notifyWhenSomeoneWaiting) { _, enabled in
                 if enabled {
-                    Task { await MatchmakingNotifications.requestAuthorizationIfNeeded() }
+                    Task {
+                        // Turning this on without OS permission → prompt again / open Settings.
+                        if !settings.notificationsEnabled {
+                            settings.notificationsEnabled = true
+                        } else {
+                            await MatchmakingNotifications.requestOrOpenSettingsIfDenied()
+                        }
+                    }
                 }
                 app.refreshSomeoneWaitingPolling()
             }
@@ -68,6 +99,21 @@ struct SettingsView: View {
         }
     }
 
+    private var onboardingBanner: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Stay in the loop")
+                .font(.system(.title3, design: .rounded).weight(.black))
+                .foregroundColor(Theme.tileText)
+            Text("You can also get notified when someone else is looking for a game. Set how many of those alerts you want per day.")
+                .font(.system(.subheadline, design: .rounded))
+                .foregroundColor(Theme.tileText.opacity(0.7))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(RoundedRectangle(cornerRadius: 14).fill(Theme.panel))
+    }
+
     private var notificationsCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("NOTIFICATIONS")
@@ -79,7 +125,7 @@ struct SettingsView: View {
                     Text("Enable notifications")
                         .font(.system(.subheadline, design: .rounded).weight(.bold))
                         .foregroundColor(Theme.tileText)
-                    Text("Daily challenge reminder at 8:00pm if you haven’t played yet.")
+                    Text("Daily challenge reminder at 8:00pm if you haven’t played yet, plus match alerts.")
                         .font(.system(.caption2, design: .rounded))
                         .foregroundColor(Theme.tileText.opacity(0.55))
                 }
@@ -91,7 +137,7 @@ struct SettingsView: View {
                     Text("Someone’s looking for a match")
                         .font(.system(.subheadline, design: .rounded).weight(.bold))
                         .foregroundColor(Theme.tileText)
-                    Text("Get notified when another player is waiting for Quick Match. We’ll send at most one per hour.")
+                    Text("Get notified when another player is waiting for Quick Match.")
                         .font(.system(.caption2, design: .rounded))
                         .foregroundColor(Theme.tileText.opacity(0.55))
                 }
@@ -99,6 +145,34 @@ struct SettingsView: View {
             .tint(Theme.accent)
             .disabled(!settings.notificationsEnabled)
             .opacity(settings.notificationsEnabled ? 1 : 0.45)
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Max alerts per day")
+                        .font(.system(.subheadline, design: .rounded).weight(.bold))
+                        .foregroundColor(Theme.tileText)
+                    Spacer()
+                    Text("\(settings.maxSomeoneWaitingPerDay)")
+                        .font(.system(.subheadline, design: .rounded).weight(.black))
+                        .foregroundColor(Theme.accentDark)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(Capsule().fill(Theme.accent.opacity(0.25)))
+                }
+                Slider(
+                    value: Binding(
+                        get: { Double(settings.maxSomeoneWaitingPerDay) },
+                        set: { settings.maxSomeoneWaitingPerDay = Int($0.rounded()) }),
+                    in: 1...10,
+                    step: 1)
+                .tint(Theme.accent)
+                .disabled(!settings.notificationsEnabled || !settings.notifyWhenSomeoneWaiting)
+                .opacity(settings.notificationsEnabled && settings.notifyWhenSomeoneWaiting ? 1 : 0.45)
+
+                Text("We’ll notify you at most this many times per day when someone is waiting to play.")
+                    .font(.system(.caption2, design: .rounded))
+                    .foregroundColor(Theme.tileText.opacity(0.55))
+            }
         }
         .panel()
     }

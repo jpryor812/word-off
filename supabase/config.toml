@@ -1,0 +1,5 @@
+# Minimal config so the Supabase CLI can deploy Edge Functions.
+project_id = "worded"
+
+[functions.send-push]
+verify_jwt = true

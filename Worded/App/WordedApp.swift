@@ -2,11 +2,14 @@ import SwiftUI
 
 @main
 struct WordedApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var app: AppState
 
     init() {
         AppState.migrateLegacyDefaults()
-        _app = StateObject(wrappedValue: AppState())
+        let state = AppState()
+        _app = StateObject(wrappedValue: state)
+        PushNotificationRouter.app = state
     }
 
     var body: some Scene {
@@ -14,6 +17,7 @@ struct WordedApp: App {
             RootView()
                 .environmentObject(app)
                 .preferredColorScheme(.light)
+                .onAppear { PushNotificationRouter.app = app }
         }
     }
 }
@@ -38,8 +42,13 @@ struct RootView: View {
                 } else if app.onboardingStore.needsWelcomeIntro {
                     WelcomeIntroView {
                         app.onboardingStore.completeWelcomeIntro()
-                        syncLayersForCurrentAuthState(screenHeight: geo.size.height)
+                        if app.profile != nil, !hasPlayedHomeEntrance {
+                            playHomeEntrance(screenHeight: geo.size.height)
+                        } else {
+                            syncLayersForCurrentAuthState(screenHeight: geo.size.height)
+                        }
                     }
+                    .environmentObject(app)
                 } else {
                     if showHomeLayer {
                         HomeView()
@@ -55,9 +64,13 @@ struct RootView: View {
                     }
                 }
 
-                if showHomeLayer, app.profile != nil, app.matchmakingBanner != .hidden {
-                    VStack {
-                        MatchmakingBanner()
+                if showHomeLayer, app.profile != nil {
+                    VStack(spacing: 8) {
+                        if app.matchmakingBanner != .hidden {
+                            MatchmakingBanner()
+                                .environmentObject(app)
+                        }
+                        SocialBanner()
                             .environmentObject(app)
                         Spacer()
                     }
@@ -99,6 +112,10 @@ struct RootView: View {
         }
         .task { await app.bootstrap() }
         .onOpenURL { url in
+            Task { await app.handleIncomingURL(url) }
+        }
+        .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+            guard let url = activity.webpageURL else { return }
             Task { await app.handleIncomingURL(url) }
         }
         .onChange(of: scenePhase) { _, phase in

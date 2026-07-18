@@ -226,6 +226,7 @@ struct DailyResultDetailView: View {
     @State private var entries: [DailyLeaderboardEntry] = []
     @State private var isLoading = true
     @State private var showBestWords = false
+    @State private var friendsOnly = false
     @State private var showTopWords = false
     @State private var showPaywall = false
     @State private var perfectScore: Int?
@@ -427,6 +428,15 @@ struct DailyResultDetailView: View {
                     .foregroundColor(Theme.tileText.opacity(0.5))
                 Spacer()
             }
+            Picker("Scope", selection: $friendsOnly) {
+                Text("Global").tag(false)
+                Text("Friends").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: friendsOnly) { _, _ in
+                Task { await loadLeaderboard() }
+            }
+
             Picker("View", selection: $showBestWords) {
                 Text("Total Score").tag(false)
                 Text("Top Word").tag(true)
@@ -442,7 +452,13 @@ struct DailyResultDetailView: View {
                     Spacer()
                 }
             } else if entries.isEmpty {
-                emptyState("No scores yet today — you might be first!")
+                emptyState(
+                    friendsOnly
+                        ? (app.friendsService.friends.isEmpty
+                            ? "Add friends to see their scores here."
+                            : "None of your friends have played this puzzle yet.")
+                        : "No scores yet today — you might be first!"
+                )
             } else {
                 ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
                     HStack {
@@ -492,12 +508,26 @@ struct DailyResultDetailView: View {
     }
 
     private func loadLeaderboard() async {
-        var fetched = await app.dailyStore.fetchLeaderboard(day: result.date, rackSize: result.rackSize)
+        isLoading = true
+        if friendsOnly {
+            await app.friendsService.refresh()
+        }
+        var friendIds: Set<String>? = nil
+        if friendsOnly {
+            var ids = app.friendsService.friendUserIds()
+            if let me = app.session?.userId { ids.insert(me) }
+            friendIds = ids
+        }
+        var fetched = await app.dailyStore.fetchLeaderboard(
+            day: result.date,
+            rackSize: result.rackSize,
+            friendUserIds: friendIds)
         // Guarantee the player sees their own score immediately, even if the
         // server upload hasn't propagated to the leaderboard query yet.
         if !app.username.isEmpty {
             fetched.removeAll { $0.username.caseInsensitiveCompare(app.username) == .orderedSame }
             fetched.append(DailyLeaderboardEntry(
+                userId: app.session?.userId,
                 username: app.username,
                 score: result.totalScore,
                 bestWord: result.bestWord?.word,
@@ -520,9 +550,15 @@ struct DailyPlayView: View {
     @State private var badgeDeltas: [BadgeProgressDelta] = []
     @State private var showBadgeCelebration = false
     @State private var showExitConfirm = false
+    @State private var showNextRoundTip = false
+    @State private var nextRoundTipTask: Task<Void, Never>?
 
     init(rackSize: Int) {
         _engine = StateObject(wrappedValue: DailyEngine(rackSize: rackSize))
+    }
+
+    private var isTutorial: Bool {
+        app.onboardingStore.isInDailyPlayTutorial
     }
 
     var body: some View {
@@ -534,7 +570,7 @@ struct DailyPlayView: View {
                 }
             } else {
                 switch engine.phase {
-                case .intro, .flipping, .go, .playing, .rackDone:
+                case .intro, .flipping, .go, .playing, .rackDone, .practiceComplete:
                     GeometryReader { geo in
                         playArea(in: geo.size)
                     }
@@ -572,15 +608,27 @@ struct DailyPlayView: View {
                 dailyStreak: app.lives.dailyCompletionStreak,
                 todayWins: app.statsStore.todayRecord.wins,
                 winStreak: app.statsStore.winStreak)
-            engine.start()
+            app.onboardingStore.resumeDailyPlayTutorialIfNeeded()
+            if app.onboardingStore.dailyPlayTutorial != nil {
+                engine.prepareTutorialDemoRack()
+            } else {
+                engine.start()
+            }
         }
         .onDisappear {
+            nextRoundTipTask?.cancel()
             engine.cancel()
             app.handleDailyPlayDidDismiss()
         }
         .onChange(of: app.requestExitDailyPlay) { _, shouldExit in
             guard shouldExit else { return }
             // Leave daily (lock score) so the pending online/AI match can start.
+            if engine.isPracticeRound || engine.phase == .practiceComplete
+                || app.onboardingStore.dailyPlayTutorial?.showsModal == true {
+                engine.exitEarly()
+                dismiss()
+                return
+            }
             if engine.phase != .finished {
                 engine.exitEarly()
                 finishPuzzle()
@@ -593,6 +641,14 @@ struct DailyPlayView: View {
         .onChange(of: engine.phase) { _, newPhase in
             if newPhase == .playing { inputFocused = true }
             if newPhase == .finished { finishPuzzle() }
+            if newPhase == .practiceComplete {
+                nextRoundTipTask?.cancel()
+                showNextRoundTip = false
+                app.onboardingStore.finishDailyPlayPractice()
+            }
+        }
+        .onChange(of: engine.lockedWord) { _, word in
+            scheduleNextRoundTipIfNeeded(locked: word)
         }
         .onChange(of: app.onboardingStore.step) { _, step in
             // After the premium pitch, tour resumes on Home with Play Online.
@@ -609,57 +665,168 @@ struct DailyPlayView: View {
             Button("Leave", role: .destructive) { exitDaily() }
             Button("Keep Playing", role: .cancel) {}
         } message: {
-            Text("Your current score will be locked in and any racks you haven't played will score zero.")
+            Text(
+                engine.isPracticeRound || app.onboardingStore.dailyPlayTutorial != nil
+                    ? "You'll leave the practice round. Your real daily hasn't started yet."
+                    : "Your current score will be locked in and any racks you haven't played will score zero."
+            )
+        }
+    }
+
+    private func handleTutorialAdvance() {
+        let before = app.onboardingStore.dailyPlayTutorial
+        app.onboardingStore.advanceDailyPlayTutorial()
+        if before == .startPractice {
+            engine.startPracticeRound()
+        } else if before == .readyForReal {
+            engine.startRealPuzzle()
+        }
+    }
+
+    private func scheduleNextRoundTipIfNeeded(locked: String?) {
+        nextRoundTipTask?.cancel()
+        showNextRoundTip = false
+        guard locked != nil,
+              engine.isPracticeRound,
+              engine.phase == .playing,
+              app.onboardingStore.dailyPlayTutorial == .practicePlaying else { return }
+        nextRoundTipTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled,
+                  engine.lockedWord != nil,
+                  engine.phase == .playing,
+                  engine.isPracticeRound else { return }
+            withAnimation(.spring(duration: 0.35)) {
+                showNextRoundTip = true
+            }
         }
     }
 
     private func exitDaily() {
+        if engine.isPracticeRound
+            || engine.phase == .practiceComplete
+            || app.onboardingStore.dailyPlayTutorial != nil {
+            engine.exitEarly()
+            app.onboardingStore.abandonDailyPlayTutorial()
+            dismiss()
+            return
+        }
         engine.exitEarly()
         finishPuzzle()
         dismiss()
     }
 
+    @ViewBuilder
     private func playArea(in size: CGSize) -> some View {
-        let tileSize = RackLayout.tileSize(letterCount: engine.rack.count, in: size)
+        let tileSize = RackLayout.tileSize(
+            letterCount: max(engine.rack.count, engine.rackSize),
+            in: size)
+        let tutorial = app.onboardingStore.dailyPlayTutorial
+        let showingDemoRack = engine.phase == .intro && isTutorial
+        let prePracticeLayout = showingDemoRack && (tutorial?.isPrePracticeTutorial == true)
+        let readyForRealLayout = engine.phase == .practiceComplete && tutorial == .readyForReal
+
+        // Pre-practice / post-practice teach: rack (or result) at the top, callout
+        // directly underneath so large Dynamic Type stays on-screen / scrollable.
+        if prePracticeLayout || readyForRealLayout {
+            ScrollView {
+                VStack(alignment: .center, spacing: 16) {
+                    tutorialHeader
+                    if prePracticeLayout, !engine.rack.isEmpty {
+                        // Sit the demo rack ~20% from the top for visual balance.
+                        Color.clear
+                            .frame(height: max(0, size.height * 0.20 - 56))
+                        RackView(
+                            rack: engine.rack,
+                            flipped: true,
+                            tileSize: tileSize,
+                            wrapRows: 1,
+                            slideIn: false,
+                            highlightPointLetters: app.onboardingStore.highlightsLetterPoints
+                                ? DailySeed.practiceHighlightLetters
+                                : [])
+                    } else if readyForRealLayout {
+                        practiceInterstitial
+                    }
+                    if let step = tutorial, step.showsModal {
+                        DailyPlayTutorialCard(step: step, onAdvance: handleTutorialAdvance)
+                            .id(step)
+                    }
+                }
+                .padding()
+                .frame(maxWidth: .infinity)
+            }
+        } else {
+            normalPlayArea(tileSize: tileSize, showingDemoRack: showingDemoRack)
+        }
+    }
+
+    private func normalPlayArea(tileSize: CGFloat, showingDemoRack: Bool) -> some View {
+        let showingPlayRack = engine.phase == .flipping || engine.phase == .go
+            || engine.phase == .playing || showingDemoRack
 
         return VStack(spacing: 16) {
             HStack(spacing: 10) {
                 ExitGameButton { showExitConfirm = true }
-                Text(engine.isLadder ? "THE LADDER" : "\(engine.rackSize)-LETTER DAILY")
+                Text(headerTitle)
                     .font(.system(.headline, design: .rounded).weight(.black))
                     .foregroundColor(.white)
                 Spacer()
-                Text(
-                    engine.isLadder
-                        ? "\(engine.currentRoundLetterCount) letters · \(engine.rackIndex + 1)/\(engine.totalRounds)"
-                        : "Rack \(engine.rackIndex + 1)/\(engine.totalRounds)"
-                )
-                    .font(.system(.subheadline, design: .rounded).weight(.bold))
-                    .foregroundColor(Theme.subtleText)
+                if engine.phase != .practiceComplete {
+                    Text(rackStatusLabel)
+                        .font(.system(.subheadline, design: .rounded).weight(.bold))
+                        .foregroundColor(Theme.subtleText)
+                }
             }
 
             HStack(alignment: .top) {
-                Label("\(engine.totalScore) pts", systemImage: "sum")
-                    .font(.system(.subheadline, design: .rounded).weight(.bold))
-                    .foregroundColor(Theme.accent)
+                if engine.isPracticeRound {
+                    Text("Practice")
+                        .font(.system(.subheadline, design: .rounded).weight(.bold))
+                        .foregroundColor(Theme.accent)
+                } else {
+                    Label("\(engine.totalScore) pts", systemImage: "sum")
+                        .font(.system(.subheadline, design: .rounded).weight(.bold))
+                        .foregroundColor(Theme.accent)
+                }
                 Spacer()
-                VStack(spacing: 8) {
-                    timer
+                VStack(alignment: .trailing, spacing: 8) {
+                    if engine.phase == .playing || engine.phase == .go || engine.phase == .flipping {
+                        timer
+                    }
                     if engine.phase == .playing && engine.lockedWord != nil {
-                        Button {
-                            engine.finishRoundEarly()
-                        } label: {
-                            Label("Finish", systemImage: "checkmark")
-                                .font(.system(.caption, design: .rounded).weight(.bold))
-                                .foregroundColor(.white)
-                                .padding(.vertical, 6)
-                                .padding(.horizontal, 12)
-                                .background(Capsule().fill(Theme.win))
+                        HStack(alignment: .center, spacing: 8) {
+                            if showNextRoundTip {
+                                Text("If you're happy with your word, you can lock it in before time runs out by pressing this button")
+                                    .font(.system(.caption2, design: .rounded).weight(.semibold))
+                                    .foregroundColor(.white.opacity(0.9))
+                                    .multilineTextAlignment(.trailing)
+                                    .frame(maxWidth: 160, alignment: .trailing)
+                                Image(systemName: "arrow.right")
+                                    .font(.system(size: 14, weight: .black))
+                                    .foregroundColor(Theme.accent)
+                                    .transition(.opacity.combined(with: .move(edge: .leading)))
+                            }
+                            Button {
+                                showNextRoundTip = false
+                                nextRoundTipTask?.cancel()
+                                engine.finishRoundEarly()
+                            } label: {
+                                Label(
+                                    engine.isPracticeRound ? "Next Round" : "Finish",
+                                    systemImage: "checkmark")
+                                    .font(.system(.caption, design: .rounded).weight(.bold))
+                                    .foregroundColor(.white)
+                                    .padding(.vertical, 6)
+                                    .padding(.horizontal, 12)
+                                    .background(Capsule().fill(Theme.win))
+                            }
+                            .transition(.scale.combined(with: .opacity))
                         }
-                        .transition(.scale.combined(with: .opacity))
                     }
                 }
                 .animation(.spring(duration: 0.3), value: engine.lockedWord)
+                .animation(.spring(duration: 0.35), value: showNextRoundTip)
             }
 
             Spacer()
@@ -672,11 +839,18 @@ struct DailyPlayView: View {
 
             if engine.phase == .rackDone {
                 rackInterstitial
-            } else {
-                RackView(rack: engine.rack, flipped: engine.phase != .flipping,
-                         tileSize: tileSize, wrapRows: 1)
-                    .animation(.spring(duration: 0.5), value: engine.rack)
-                    .animation(.spring(duration: 0.5), value: engine.phase)
+            } else if engine.phase == .practiceComplete {
+                practiceInterstitial
+            } else if showingPlayRack, !engine.rack.isEmpty {
+                RackView(
+                    rack: engine.rack,
+                    flipped: engine.phase != .flipping,
+                    tileSize: tileSize,
+                    wrapRows: 1,
+                    slideIn: engine.phase == .flipping,
+                    highlightPointLetters: app.onboardingStore.highlightsLetterPoints
+                        ? DailySeed.practiceHighlightLetters
+                        : [])
             }
 
             if engine.phase == .playing {
@@ -695,9 +869,57 @@ struct DailyPlayView: View {
 
             Spacer()
 
-            inputBar
+            if engine.phase == .playing {
+                inputBar
+            }
         }
         .padding()
+    }
+
+    private var tutorialHeader: some View {
+        HStack(spacing: 10) {
+            ExitGameButton { showExitConfirm = true }
+            Text(headerTitle)
+                .font(.system(.headline, design: .rounded).weight(.black))
+                .foregroundColor(.white)
+            Spacer()
+        }
+    }
+
+    private var headerTitle: String {
+        if engine.isPracticeRound || engine.phase == .practiceComplete {
+            return "PRACTICE ROUND"
+        }
+        if isTutorial, engine.phase == .intro {
+            return "HOW TO PLAY"
+        }
+        return engine.isLadder ? "THE LADDER" : "\(engine.rackSize)-LETTER DAILY"
+    }
+
+    private var rackStatusLabel: String {
+        if engine.isPracticeRound {
+            return "Practice"
+        }
+        return engine.isLadder
+            ? "\(engine.currentRoundLetterCount) letters · \(engine.rackIndex + 1)/\(engine.totalRounds)"
+            : "Rack \(engine.rackIndex + 1)/\(engine.totalRounds)"
+    }
+
+    private var practiceInterstitial: some View {
+        VStack(spacing: 8) {
+            Text(engine.practiceScore > 0 ? "+\(engine.practiceScore) points!" : "No score")
+                .font(.system(.title, design: .rounded).weight(.black))
+                .foregroundColor(engine.practiceScore > 0 ? Theme.win : Theme.lose)
+            if let word = engine.practiceWord {
+                Text(word)
+                    .font(.system(.title3, design: .rounded).weight(.bold))
+                    .foregroundColor(.white)
+            }
+            Text("Practice — doesn't count")
+                .font(.system(.caption, design: .rounded).weight(.bold))
+                .foregroundColor(Theme.subtleText)
+        }
+        .transition(.scale.combined(with: .opacity))
     }
 
     private var timer: some View {

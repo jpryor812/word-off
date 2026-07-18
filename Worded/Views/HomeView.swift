@@ -8,6 +8,7 @@ struct HomeView: View {
     @State private var showStats = false
     @State private var showSettings = false
     @State private var outOfLivesAlert = false
+    @State private var needsSignInAlert = false
     @State private var challengeError: String?
     @State private var challengingUsername: String?
     @State private var aiAfterMatchmakingTimeout = false
@@ -42,7 +43,14 @@ struct HomeView: View {
                         }
                         .padding(16)
                     }
-                    .onChange(of: app.onboardingStore.step) { _, _ in
+                    .onChange(of: app.onboardingStore.step) { _, step in
+                        if step == .someoneWaitingSettings {
+                            // Slight delay so the match cover / lives intro can finish dismissing.
+                            Task { @MainActor in
+                                try? await Task.sleep(for: .milliseconds(350))
+                                showSettings = true
+                            }
+                        }
                         guard app.onboardingStore.isActive else { return }
                         if app.onboardingStore.scrollTargetID != nil {
                             OnboardingScroll.scrollToStep(
@@ -129,8 +137,40 @@ struct HomeView: View {
             .sheet(isPresented: $showStats) {
                 StatsView().environmentObject(app)
             }
-            .sheet(isPresented: $showSettings) {
-                SettingsView().environmentObject(app)
+            .sheet(isPresented: $showSettings, onDismiss: {
+                if app.onboardingStore.step == .someoneWaitingSettings {
+                    app.onboardingStore.advance()
+                } else if app.onboardingStore.showSomeoneWaitingSettingsSheet {
+                    app.onboardingStore.dismissSomeoneWaitingSettingsSheet()
+                }
+            }) {
+                SettingsView(
+                    someoneWaitingOnboarding: app.onboardingStore.isSomeoneWaitingSettingsStep,
+                    onSomeoneWaitingOnboardingDone: {
+                        // Dismiss triggers onDismiss → advance / clear flag.
+                    })
+                .environmentObject(app)
+            }
+            .onChange(of: app.onboardingStore.showSomeoneWaitingSettingsSheet) { _, show in
+                if show {
+                    Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(350))
+                        showSettings = true
+                    }
+                }
+            }
+            .overlay {
+                if app.showOnlineRulesIntro {
+                    OnlineRulesIntroOverlay {
+                        app.completeOnlineRulesIntro()
+                    }
+                    .zIndex(50)
+                } else if app.showMatchmakingNotifyIntro {
+                    MatchmakingNotifyIntroOverlay {
+                        Task { await app.completeMatchmakingNotifyIntro() }
+                    }
+                    .zIndex(50)
+                }
             }
             .onAppear {
                 app.onboardingStore.startIfNeeded()
@@ -153,28 +193,16 @@ struct HomeView: View {
             .onChange(of: app.challengeStatusMessage) { _, message in
                 if let message { challengeError = message }
             }
-            .alert(
-                "Game Challenge",
-                isPresented: Binding(
-                    get: { app.challengeService.incomingChallenge != nil && !app.onboardingStore.isActive },
-                    set: { _ in }
-                ),
-                presenting: app.challengeService.incomingChallenge
-            ) { invite in
-                Button("Accept") {
-                    Task { await app.acceptIncomingChallenge() }
-                }
-                Button("Decline", role: .destructive) {
-                    Task { await app.rejectIncomingChallenge() }
-                }
-            } message: { invite in
-                Text("\(invite.challengerUsername) is challenging you to a game!")
-            }
             .alert("Out of lives!", isPresented: $outOfLivesAlert) {
                 Button("Get Unlimited") { showPaywall = true }
                 Button("OK", role: .cancel) {}
             } message: {
                 Text("You've used all your games for today. Come back tomorrow, keep your login streak going for bonus lives, or go Premium for unlimited play.")
+            }
+            .alert("Sign in to play online", isPresented: $needsSignInAlert) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Quick Match and friend challenges need an account. Use Play AI anytime, or sign in for human opponents.")
             }
         }
     }
@@ -392,6 +420,15 @@ struct HomeView: View {
             .buttonStyle(PrimaryButtonStyle(color: Theme.backgroundLight))
             .id("onboarding.challengeFriend")
             .onboardingAnchor(.challengeFriend)
+
+            Button {
+                guard !app.onboardingStore.isActive else { return }
+                startAIMatch()
+            } label: {
+                Label("Play AI", systemImage: "cpu")
+            }
+            .buttonStyle(PrimaryButtonStyle(color: Theme.backgroundLight))
+            .disabled(app.onboardingStore.isActive)
         }
         .panel()
         .onboardingAnchor(.quickMatchCard)
@@ -502,14 +539,20 @@ struct HomeView: View {
         switch app.beginBackgroundQuickMatch() {
         case .started:
             break
-        case .localAI:
-            app.presentAIDifficultyPicker()
+        case .needsSignIn:
+            needsSignInAlert = true
         case .outOfLives:
             outOfLivesAlert = true
         case .alreadyBusy:
             if app.pendingOnlineMatch != nil {
                 app.acceptMatchmakingBannerAction()
             }
+        }
+    }
+
+    private func startAIMatch() {
+        if !app.beginAIMatch() {
+            outOfLivesAlert = true
         }
     }
 }
@@ -530,7 +573,7 @@ struct ChallengeWaitingOverlay: View {
                 Text("Waiting for \(opponentName)…")
                     .font(.system(.title3, design: .rounded).weight(.bold))
                     .foregroundColor(.white)
-                Text("They'll get a challenge in the app, or send them a text invite below.")
+                Text("They'll get a challenge in the app, or send a text invite below. Invites expire after 6 hours.")
                     .font(.system(.subheadline, design: .rounded))
                     .foregroundColor(Theme.subtleText)
                     .multilineTextAlignment(.center)
@@ -567,6 +610,9 @@ struct FriendChallengeSheet: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject var app: AppState
     @State private var username = ""
+    @State private var localError: String?
+    @State private var statusMessage: String?
+    @State private var addFriendBusy = false
     var busy: Bool
     var errorMessage: String?
     var onChallenge: (String) -> Void
@@ -575,22 +621,46 @@ struct FriendChallengeSheet: View {
         NavigationStack {
             ZStack {
                 Theme.background.ignoresSafeArea()
-                VStack(spacing: 18) {
+                ScrollView {
                     FriendChallengeContent(
                         username: $username,
-                        busy: busy,
-                        errorMessage: errorMessage,
-                        onChallenge: onChallenge)
-                    Spacer()
+                        busy: busy || addFriendBusy,
+                        errorMessage: localError ?? errorMessage,
+                        statusMessage: statusMessage,
+                        onChallenge: { name in
+                            localError = nil
+                            statusMessage = nil
+                            onChallenge(name)
+                        },
+                        onAddFriend: { name in
+                            Task { await sendFriendRequest(to: name) }
+                        })
+                    .padding(24)
                 }
-                .padding(24)
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") { dismiss() }
                 }
             }
+            .task {
+                await app.friendsService.refresh()
+            }
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func sendFriendRequest(to name: String) async {
+        localError = nil
+        statusMessage = nil
+        addFriendBusy = true
+        defer { addFriendBusy = false }
+        do {
+            try await app.friendsService.sendRequest(toUsername: name)
+            statusMessage = "Friend request sent to \(name)."
+        } catch {
+            localError = error.localizedDescription
+        }
     }
 }

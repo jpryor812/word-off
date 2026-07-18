@@ -138,18 +138,6 @@ final class SupabaseClient {
 
     // MARK: - Auth
 
-    func signUp(email: String, password: String) async throws -> Session {
-        let body = ["email": email, "password": password]
-        let json = try await authRequest(path: "signup", body: body)
-        return try parseSession(json)
-    }
-
-    func signIn(email: String, password: String) async throws -> Session {
-        let body = ["email": email, "password": password]
-        let json = try await authRequest(path: "token?grant_type=password", body: body)
-        return try parseSession(json)
-    }
-
     /// Exchanges a Sign in with Apple identity token for a Supabase session.
     func signInWithApple(idToken: String) async throws -> Session {
         let body = ["provider": "apple", "id_token": idToken]
@@ -217,6 +205,37 @@ final class SupabaseClient {
             return retryData
         }
 
+        guard (200..<300).contains(code) else {
+            throw SupabaseError.http(code, String(data: data, encoding: .utf8) ?? "")
+        }
+        return data
+    }
+
+    /// Calls a Supabase Edge Function (`POST /functions/v1/{name}`).
+    func invokeFunction(name: String, body: [String: Any]) async throws -> Data {
+        guard SupabaseConfig.isConfigured else { throw SupabaseError.notConfigured }
+        var request = URLRequest(url: URL(string: "\(SupabaseConfig.url)/functions/v1/\(name)")!)
+        request.httpMethod = "POST"
+        request.setValue(SupabaseConfig.anonKey, forHTTPHeaderField: "apikey")
+        if let token = currentSession?.accessToken {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await session.data(for: request)
+        let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if code == 401, currentSession != nil {
+            try await refreshSessionDeduped()
+            if let token = currentSession?.accessToken {
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
+            let (retryData, retryResponse) = try await session.data(for: request)
+            let retryCode = (retryResponse as? HTTPURLResponse)?.statusCode ?? 0
+            guard (200..<300).contains(retryCode) else {
+                throw SupabaseError.http(retryCode, String(data: retryData, encoding: .utf8) ?? "")
+            }
+            return retryData
+        }
         guard (200..<300).contains(code) else {
             throw SupabaseError.http(code, String(data: data, encoding: .utf8) ?? "")
         }

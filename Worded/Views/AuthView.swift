@@ -3,11 +3,8 @@ import AuthenticationServices
 
 struct AuthView: View {
     @EnvironmentObject var app: AppState
-    @State private var email = ""
-    @State private var password = ""
     @State private var username = ""
     @State private var country = Locale.current.region?.identifier ?? "US"
-    @State private var isSigningUp = false
     @State private var needsProfile = false
     @State private var errorMessage: String?
     @State private var busy = false
@@ -71,41 +68,19 @@ struct AuthView: View {
                 .buttonStyle(PrimaryButtonStyle())
                 .disabled(username.count < 3)
             } else {
+                Text("Sign in to play online, challenge friends, and climb the leaderboards.")
+                    .font(.system(.subheadline, design: .rounded))
+                    .foregroundColor(Theme.tileText.opacity(0.7))
+                    .multilineTextAlignment(.center)
+
                 SignInWithAppleButton(.signIn) { request in
                     request.requestedScopes = [.email]
                 } onCompletion: { result in
                     Task { await handleApple(result) }
                 }
+                .signInWithAppleButtonStyle(.white)
                 .frame(height: 50)
                 .cornerRadius(14)
-
-                HStack {
-                    Rectangle().fill(Theme.tileEdge.opacity(0.35)).frame(height: 1)
-                    Text("or use email")
-                        .font(.system(.caption, design: .rounded).weight(.bold))
-                        .foregroundColor(Theme.tileText.opacity(0.5))
-                    Rectangle().fill(Theme.tileEdge.opacity(0.35)).frame(height: 1)
-                }
-
-                Picker("Mode", selection: $isSigningUp) {
-                    Text("Log In").tag(false)
-                    Text("Sign Up").tag(true)
-                }
-                .pickerStyle(.segmented)
-
-                TextField("Email", text: $email)
-                    .textFieldStyle(.roundedBorder)
-                    .keyboardType(.emailAddress)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-                SecureField("Password", text: $password)
-                    .textFieldStyle(.roundedBorder)
-
-                Button(isSigningUp ? "Create Account" : "Log In") {
-                    Task { await submitEmail() }
-                }
-                .buttonStyle(PrimaryButtonStyle())
-                .disabled(busy || email.isEmpty || password.count < 6)
             }
         }
         .panel()
@@ -172,24 +147,6 @@ struct AuthView: View {
             return
         }
         app.completeLocalSignIn(username: username, country: country)
-    }
-
-    private func submitEmail() async {
-        busy = true
-        defer { busy = false }
-        errorMessage = nil
-        do {
-            if isSigningUp {
-                app.session = try await SupabaseClient.shared.signUp(email: email, password: password)
-                needsProfile = true
-            } else {
-                app.session = try await SupabaseClient.shared.signIn(email: email, password: password)
-                await app.loadProfile()
-                if app.profile == nil { needsProfile = true }
-            }
-        } catch {
-            errorMessage = error.localizedDescription
-        }
     }
 
     private func handleApple(_ result: Result<ASAuthorization, Error>) async {

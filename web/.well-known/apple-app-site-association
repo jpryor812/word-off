@@ -1,0 +1,14 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appIDs": ["TEAMID.com.worded.app"],
+        "components": [
+          { "/": "/challenge/*" },
+          { "/": "/user/*" }
+        ]
+      }
+    ]
+  }
+}

@@ -425,10 +425,16 @@ enum BadgeCatalog {
     }
 
     /// Top badges to orbit the avatar border in pre-game (max 6).
+    /// Prefers highest prestige first, then rarer badge kinds.
     static func featured(from stats: BadgeStats, loginStreak: Int, dailyStreak: Int, limit: Int = 6) -> [EarnedBadge] {
         earned(from: stats, loginStreak: loginStreak, dailyStreak: dailyStreak)
             .sorted {
-                if $0.kind.rarity != $1.kind.rarity { return $0.kind.rarity > $1.kind.rarity }
+                if $0.prestigeLevel != $1.prestigeLevel {
+                    return $0.prestigeLevel > $1.prestigeLevel
+                }
+                if $0.kind.rarity != $1.kind.rarity {
+                    return $0.kind.rarity > $1.kind.rarity
+                }
                 return $0.tier > $1.tier
             }
             .prefix(limit)

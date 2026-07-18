@@ -23,7 +23,11 @@ enum MatchmakingNotifications {
         let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()
         guard settings.authorizationStatus == .notDetermined else { return }
-        _ = try? await center.requestAuthorization(options: [.alert, .sound, .badge])
+        let granted = (try? await center.requestAuthorization(options: [.alert, .sound, .badge])) ?? false
+        if granted {
+            SettingsStore.shared.notificationsEnabled = true
+            await PushRegistration.requestAuthorizationAndRegister()
+        }
     }
 
     /// Returns whether we can currently deliver banners/alerts.
@@ -34,6 +38,28 @@ enum MatchmakingNotifications {
             return true
         default:
             return false
+        }
+    }
+
+    static func authorizationStatus() async -> UNAuthorizationStatus {
+        await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
+    }
+
+    /// Prompt if not determined; open iOS Settings if previously denied.
+    static func requestOrOpenSettingsIfDenied() async {
+        let status = await authorizationStatus()
+        switch status {
+        case .notDetermined:
+            await requestAuthorizationIfNeeded()
+        case .denied:
+            if let url = URL(string: UIApplication.openSettingsURLString) {
+                await UIApplication.shared.open(url)
+            }
+        case .authorized, .provisional, .ephemeral:
+            SettingsStore.shared.notificationsEnabled = true
+            await PushRegistration.requestAuthorizationAndRegister()
+        @unknown default:
+            break
         }
     }
 

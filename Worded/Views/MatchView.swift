@@ -14,6 +14,8 @@ struct MatchView: View {
     @State private var badgeDeltas: [BadgeProgressDelta] = []
     @State private var showBadgeCelebration = false
     @State private var showExitConfirm = false
+    @State private var friendRequestBusy = false
+    @State private var friendRequestMessage: String?
 
     init(
         onlineMatch: OnlineMatchConfig? = nil,
@@ -125,16 +127,9 @@ struct MatchView: View {
                 .tint(.white)
             Text(engine.isOnlineMatch
                  ? "Connecting to \(engine.opponentName)…"
-                 : engine.aiAfterMatchmakingTimeout
-                    ? "No match found — playing a stand-in opponent"
-                    : "Finding an opponent…")
+                 : "Getting ready…")
                 .font(.system(.title3, design: .rounded).weight(.bold))
                 .foregroundColor(.white)
-            if !engine.isOnlineMatch && !engine.aiAfterMatchmakingTimeout {
-                Text("Usually takes 10–20 seconds")
-                    .font(.system(.subheadline, design: .rounded))
-                    .foregroundColor(Theme.subtleText)
-            }
             Button("Cancel") {
                 app.finishOnlineMatch()
                 dismiss()
@@ -164,12 +159,12 @@ struct MatchView: View {
         VStack(spacing: 12) {
             scoreHeader
             Spacer()
-            Text("ROUND \(engine.roundNumber)")
+            Text("ROUND \(engine.roundDisplayLabel)")
                 .font(.system(size: 44, weight: .black, design: .rounded))
                 .foregroundColor(.white)
                 .transition(.scale.combined(with: .opacity))
             if engine.rounds.last?.outcome == .tie {
-                Text("TIE! Replay — no repeat words!")
+                Text("TIE! Replay the round with new letters")
                     .font(.system(.headline, design: .rounded))
                     .foregroundColor(Theme.accent)
             }
@@ -198,9 +193,11 @@ struct MatchView: View {
                         .transition(.scale)
                 }
 
-                RackView(rack: engine.rack, flipped: engine.phase != .flipping, tileSize: tileSize)
-                    .animation(.spring(duration: 0.5), value: engine.rack)
-                    .animation(.spring(duration: 0.5), value: engine.phase)
+                RackView(
+                    rack: engine.rack,
+                    flipped: engine.phase != .flipping,
+                    tileSize: tileSize,
+                    slideIn: engine.phase == .flipping)
 
                 if engine.phase == .playing && engine.lockedWord == nil {
                     Button {
@@ -233,7 +230,7 @@ struct MatchView: View {
             ExitGameButton { showExitConfirm = true }
             scorePill(name: app.username, wins: engine.playerRoundWins, highlight: true)
             Spacer()
-            Text("Rd \(engine.roundNumber)/7")
+            Text("Rd \(engine.roundDisplayLabel)/7")
                 .font(.system(.caption, design: .rounded).weight(.bold))
                 .foregroundColor(Theme.subtleText)
             Spacer()
@@ -358,12 +355,12 @@ struct MatchView: View {
                     .foregroundColor(.white)
 
                 VStack(spacing: 8) {
-                    ForEach(Array(engine.rounds.enumerated()), id: \.offset) { index, round in
+                    ForEach(Array(engine.rounds.enumerated()), id: \.offset) { _, round in
                         HStack {
-                            Text("R\(index + 1)")
+                            Text(round.label)
                                 .font(.system(.caption, design: .rounded).weight(.black))
                                 .foregroundColor(Theme.tileText.opacity(0.5))
-                                .frame(width: 32)
+                                .frame(width: 40, alignment: .leading)
                             Text(round.player.isValid ? (round.player.word ?? "—") : "—")
                                 .font(.system(.subheadline, design: .rounded).weight(.bold))
                                 .foregroundColor(Theme.tileText)
@@ -384,6 +381,10 @@ struct MatchView: View {
                 .panel()
 
                 topWordsSection
+
+                if engine.isOnlineMatch {
+                    postMatchFriendSection
+                }
 
                 ShareLink(item: shareText) {
                     Label("Share Result", systemImage: "square.and.arrow.up")
@@ -442,13 +443,68 @@ struct MatchView: View {
 
     private var shareText: String {
         var lines = ["Worded \(outcomeTitle) \(engine.playerRoundWins)–\(engine.opponentRoundWins)"]
-        for (index, round) in engine.rounds.enumerated() {
+        for round in engine.rounds {
             let blurred = String(repeating: "▮", count: round.player.word?.count ?? 1)
             let marker = round.outcome == .playerWins ? "✅" : round.outcome == .opponentWins ? "❌" : "➖"
-            lines.append("R\(index + 1): \(blurred) \(round.player.score) pts \(marker)")
+            lines.append("\(round.label): \(blurred) \(round.player.score) pts \(marker)")
         }
         lines.append("Play me at worded.app")
         return lines.joined(separator: "\n")
+    }
+
+    @ViewBuilder
+    private var postMatchFriendSection: some View {
+        let opponentId = engine.onlineConfig?.opponentUserId
+        let relation = opponentId.map { app.friendsService.relation(withUserId: $0) } ?? .none
+
+        VStack(spacing: 8) {
+            if let friendRequestMessage {
+                Text(friendRequestMessage)
+                    .font(.system(.caption, design: .rounded).weight(.bold))
+                    .foregroundColor(Theme.win)
+                    .multilineTextAlignment(.center)
+            }
+
+            switch relation {
+            case .friends:
+                Label("You're friends with \(engine.opponentName)", systemImage: "checkmark.seal.fill")
+                    .font(.system(.subheadline, design: .rounded).weight(.bold))
+                    .foregroundColor(Theme.win)
+            case .pendingOutgoing:
+                Text("Friend request sent to \(engine.opponentName)")
+                    .font(.system(.subheadline, design: .rounded).weight(.bold))
+                    .foregroundColor(Theme.subtleText)
+            case .pendingIncoming:
+                Text("\(engine.opponentName) already sent you a friend request — check the banner on Home.")
+                    .font(.system(.caption, design: .rounded).weight(.bold))
+                    .foregroundColor(Theme.subtleText)
+                    .multilineTextAlignment(.center)
+            case .none:
+                Button {
+                    Task { await sendPostMatchFriendRequest() }
+                } label: {
+                    if friendRequestBusy {
+                        ProgressView().tint(.white)
+                    } else {
+                        Label("Add \(engine.opponentName) as Friend", systemImage: "person.badge.plus.fill")
+                    }
+                }
+                .buttonStyle(PrimaryButtonStyle(color: Theme.win))
+                .disabled(friendRequestBusy || opponentId == nil)
+            }
+        }
+    }
+
+    private func sendPostMatchFriendRequest() async {
+        guard let opponentId = engine.onlineConfig?.opponentUserId else { return }
+        friendRequestBusy = true
+        defer { friendRequestBusy = false }
+        do {
+            try await app.friendsService.sendRequest(toUserId: opponentId)
+            friendRequestMessage = "Friend request sent!"
+        } catch {
+            friendRequestMessage = error.localizedDescription
+        }
     }
 
     // MARK: - Top words reveal ($0.99 or free for premium)
@@ -460,11 +516,11 @@ struct MatchView: View {
                 Label("Best possible words", systemImage: "trophy.fill")
                     .font(.system(.headline, design: .rounded).weight(.black))
                     .foregroundColor(Theme.tileText)
-                ForEach(Array(engine.rounds.enumerated()), id: \.offset) { index, _ in
+                ForEach(Array(engine.rounds.enumerated()), id: \.offset) { index, round in
                     if let solution = topWordsByRound[index] {
                         VStack(alignment: .leading, spacing: 4) {
                             HStack {
-                                Text("Round \(index + 1)")
+                                Text(round.label)
                                     .font(.system(.caption, design: .rounded).weight(.black))
                                     .foregroundColor(Theme.tileText.opacity(0.5))
                                 Spacer()
@@ -613,51 +669,54 @@ struct RoundRevealCard: View {
     }
 
     private func submissionRow(name: String, submission: PlayerSubmission, isWinner: Bool, isFaster: Bool) -> some View {
-        // Long, high-scoring words with a speed bonus make the "5 + 1 = 6"
-        // readout wrap awkwardly beside the tiles, so for 7–8 letter words
-        // worth 10+ points we stack the score underneath the tiles instead.
+        // 7–8 letter words + speed bonus: equation and speed note need room,
+        // so stack them under the tiles (crown stays on the green total).
+        // No speed bonus → score always stays on the letter row, any length.
         let wordLength = submission.word?.count ?? 0
+        let hasSpeedBonus = (submission.breakdown?.speedBonus ?? 0) > 0
         let scoreBelowLetters = submission.isValid
-            && submission.score >= 10
+            && hasSpeedBonus
             && (wordLength == 7 || wordLength == 8)
 
-        return HStack(alignment: .center) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(name)
-                    .font(.system(.caption, design: .rounded).weight(.bold))
-                    .foregroundColor(Theme.tileText.opacity(0.6))
-                if let word = submission.word, submission.isValid {
-                    HStack(spacing: 3) {
-                        ForEach(Array(word.enumerated()), id: \.offset) { _, letter in
-                            TileView(letter: letter, size: 28)
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .center) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(name)
+                        .font(.system(.caption, design: .rounded).weight(.bold))
+                        .foregroundColor(Theme.tileText.opacity(0.6))
+                    if let word = submission.word, submission.isValid {
+                        HStack(spacing: 3) {
+                            ForEach(Array(word.enumerated()), id: \.offset) { _, letter in
+                                TileView(letter: letter, size: 28)
+                            }
                         }
+                    } else if submission.word != nil {
+                        Text("\(submission.word!) — not a word!")
+                            .font(.system(.subheadline, design: .rounded).weight(.bold))
+                            .foregroundColor(Theme.lose)
+                    } else {
+                        Text("No word")
+                            .font(.system(.subheadline, design: .rounded))
+                            .foregroundColor(Theme.tileText.opacity(0.4))
                     }
-                } else if submission.word != nil {
-                    Text("\(submission.word!) — not a word!")
-                        .font(.system(.subheadline, design: .rounded).weight(.bold))
-                        .foregroundColor(Theme.lose)
-                } else {
-                    Text("No word")
-                        .font(.system(.subheadline, design: .rounded))
-                        .foregroundColor(Theme.tileText.opacity(0.4))
+                    if !scoreBelowLetters, submission.isValid, let seconds = submission.submittedAt {
+                        speedPill(seconds: seconds, isFaster: isFaster)
+                    }
                 }
-                if submission.isValid, let seconds = submission.submittedAt {
-                    speedPill(seconds: seconds, isFaster: isFaster)
-                }
-                if scoreBelowLetters {
+                Spacer(minLength: 8)
+                if !scoreBelowLetters {
                     scoreDisplay(submission: submission, isWinner: isWinner)
                 }
             }
-            Spacer()
-            if !scoreBelowLetters {
-                scoreDisplay(submission: submission, isWinner: isWinner)
-            }
-        }
-        .overlay(alignment: .topTrailing) {
-            if isWinner {
-                Image(systemName: "crown.fill")
-                    .foregroundColor(Theme.accent)
-                    .offset(y: -8)
+
+            if scoreBelowLetters {
+                HStack(alignment: .center, spacing: 10) {
+                    if let seconds = submission.submittedAt {
+                        speedPill(seconds: seconds, isFaster: isFaster)
+                    }
+                    Spacer(minLength: 8)
+                    scoreDisplay(submission: submission, isWinner: isWinner)
+                }
             }
         }
     }
@@ -686,7 +745,7 @@ struct RoundRevealCard: View {
 
     /// Score readout. With a speed bonus it reads like "5 + 1 = 6": the base
     /// letter score in black, the +1 speed bonus in blue, and the final total
-    /// in green (with the crown) when this player won the round.
+    /// in green when this player won — crown sits on top of that total.
     private func scoreDisplay(submission: PlayerSubmission, isWinner: Bool) -> some View {
         let total = submission.score
         let speedBonus = submission.breakdown?.speedBonus ?? 0
@@ -709,6 +768,14 @@ struct RoundRevealCard: View {
             Text("\(total)")
                 .font(.system(.title, design: .rounded).weight(.black))
                 .foregroundColor(isWinner ? Theme.win : Theme.tileText)
+                .overlay(alignment: .top) {
+                    if isWinner {
+                        Image(systemName: "crown.fill")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(Theme.accent)
+                            .offset(y: -14)
+                    }
+                }
         }
     }
 }

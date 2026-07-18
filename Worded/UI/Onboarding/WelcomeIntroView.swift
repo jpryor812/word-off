@@ -1,7 +1,9 @@
 import SwiftUI
+import AuthenticationServices
 
-/// First-launch welcome after sign-in: scrambled tiles settle into WELCOME / TO / WORDED.
+/// First-launch welcome: scrambled tiles settle into WELCOME / TO / WORDED, then Sign in with Apple.
 struct WelcomeIntroView: View {
+    @EnvironmentObject var app: AppState
     var onContinue: () -> Void
 
     private let words = ["WELCOME", "TO", "WORDED"]
@@ -14,6 +16,8 @@ struct WelcomeIntroView: View {
     @State private var scrambleOffsets: [CGSize] = []
     @State private var scrambleRotations: [Double] = []
     @State private var appeared = false
+    @State private var errorMessage: String?
+    @State private var busy = false
 
     private var letters: [WelcomeLetter] {
         var result: [WelcomeLetter] = []
@@ -42,11 +46,33 @@ struct WelcomeIntroView: View {
                 VStack {
                     Spacer()
                     if showButton {
-                        Button("Get started", action: onContinue)
-                            .buttonStyle(PrimaryButtonStyle())
-                            .padding(.horizontal, 32)
-                            .padding(.bottom, max(geo.safeAreaInsets.bottom, 24) + 12)
-                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                        VStack(spacing: 12) {
+                            if let errorMessage {
+                                Text(errorMessage)
+                                    .font(.footnote)
+                                    .foregroundColor(.yellow)
+                                    .multilineTextAlignment(.center)
+                            }
+
+                            if app.isLocalMode {
+                                Button("Get started", action: onContinue)
+                                    .buttonStyle(PrimaryButtonStyle())
+                            } else {
+                                SignInWithAppleButton(.signIn) { request in
+                                    request.requestedScopes = [.email]
+                                } onCompletion: { result in
+                                    Task { await handleApple(result) }
+                                }
+                                .signInWithAppleButtonStyle(.white)
+                                .frame(height: 50)
+                                .cornerRadius(14)
+                                .disabled(busy)
+                                .opacity(busy ? 0.7 : 1)
+                            }
+                        }
+                        .padding(.horizontal, 32)
+                        .padding(.bottom, max(geo.safeAreaInsets.bottom, 24) + 88)
+                        .transition(.opacity.combined(with: .move(edge: .bottom)))
                     }
                 }
             }
@@ -94,6 +120,26 @@ struct WelcomeIntroView: View {
         }
     }
 
+    private func handleApple(_ result: Result<ASAuthorization, Error>) async {
+        guard case .success(let auth) = result,
+              let credential = auth.credential as? ASAuthorizationAppleIDCredential,
+              let tokenData = credential.identityToken,
+              let token = String(data: tokenData, encoding: .utf8) else {
+            errorMessage = "Apple sign-in failed."
+            return
+        }
+        busy = true
+        defer { busy = false }
+        errorMessage = nil
+        do {
+            app.session = try await SupabaseClient.shared.signInWithApple(idToken: token)
+            await app.loadProfile()
+            onContinue()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     private func rotation(for letter: WelcomeLetter) -> Double {
         guard letter.id < scrambleRotations.count else { return 0 }
         return letter.line < formedLines ? 0 : scrambleRotations[letter.id]
@@ -115,8 +161,8 @@ struct WelcomeIntroView: View {
             + CGFloat(max(word.count - 1, 0)) * tileSpacing
         let blockHeight = CGFloat(words.count) * tileSize
             + CGFloat(words.count - 1) * lineSpacing
-        // Leave room for the button along the bottom.
-        let blockCenterY = size.height * 0.40
+        // Leave room for the sign-in button along the bottom.
+        let blockCenterY = size.height * 0.38
         let topY = blockCenterY - blockHeight / 2
 
         let lineY = topY + CGFloat(letter.line) * (tileSize + lineSpacing) + tileSize / 2

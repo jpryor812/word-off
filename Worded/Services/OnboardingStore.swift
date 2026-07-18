@@ -11,10 +11,41 @@ enum OnboardingStep: Int, CaseIterable {
     /// Back on Home after the first daily.
     case quickMatch = 4
     case inviteFriend = 5
-    case homePlayFreely = 6
+    /// Settings sheet: someone-waiting notifications + daily cap slider.
+    case someoneWaitingSettings = 6
+    case homePlayFreely = 7
 
     var stepNumber: Int { rawValue + 1 }
     static var count: Int { allCases.count }
+}
+
+/// In-play rules + practice round before the real onboarding daily.
+enum DailyPlayTutorialStep: Int, CaseIterable {
+    case rulesOverview
+    case letterPoints
+    case submitRules
+    case fourRounds
+    case startPractice
+    /// Practice rack is running (no modal).
+    case practicePlaying
+    case readyForReal
+
+    var showsModal: Bool {
+        switch self {
+        case .practicePlaying: return false
+        default: return true
+        }
+    }
+
+    /// Rules callouts shown with the demo rack before practice starts.
+    var isPrePracticeTutorial: Bool {
+        switch self {
+        case .rulesOverview, .letterPoints, .submitRules, .fourRounds, .startPractice:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 enum HomeOnboardingAnchor: Hashable {
@@ -75,7 +106,7 @@ enum LivesIntroPhase: Equatable {
 /// Versioned first-run tour over the real Home screen.
 @MainActor
 final class OnboardingStore: ObservableObject {
-    static let currentVersion = 6
+    static let currentVersion = 7
     /// Set to `true` only while iterating on the tour — when true, onboarding runs every Home launch.
     static let repeatEveryLaunchForTesting = false
     private static let completedKey = "worded.onboarding.completedVersion"
@@ -88,6 +119,17 @@ final class OnboardingStore: ObservableObject {
     @Published private(set) var isStepTransitioning = false
     /// True while the auth → home entrance animation is playing; delays the spotlight tour.
     @Published private(set) var isDeferringTourForHomeEntrance = false
+    /// Rules + practice flow inside DailyPlayView (nil when not in that sub-tour).
+    @Published private(set) var dailyPlayTutorial: DailyPlayTutorialStep?
+    /// True after practice finishes and the real daily has been started.
+    @Published private(set) var dailyPlayTutorialCompleted = false
+    /// Where to resume the home tour after the post-online notifications settings step.
+    private var stepAfterSomeoneWaiting: OnboardingStep?
+    private var didPresentSomeoneWaitingSettings = false
+    /// Queued until the lives intro (if any) finishes.
+    private var pendingSomeoneWaitingSettings = false
+    /// Opens the notifications settings sheet when the main tour is already done.
+    @Published private(set) var showSomeoneWaitingSettingsSheet = false
 
     /// Contextual lives teach after the first life-consuming online game.
     @Published private(set) var livesIntroPhase: LivesIntroPhase = .idle
@@ -144,8 +186,24 @@ final class OnboardingStore: ObservableObject {
         step == .dailyLeaderboard || step == .dailyPremiumPitch
     }
 
+    var isInDailyPlayTutorial: Bool {
+        dailyPlayTutorial != nil
+    }
+
+    var highlightsLetterPoints: Bool {
+        dailyPlayTutorial == .letterPoints
+    }
+
     var isOnHomeTour: Bool {
-        isActive && step != nil && step != .homePlayFreely && !isInDailyResultsOnboarding
+        isActive
+            && step != nil
+            && step != .homePlayFreely
+            && step != .someoneWaitingSettings
+            && !isInDailyResultsOnboarding
+    }
+
+    var isSomeoneWaitingSettingsStep: Bool {
+        step == .someoneWaitingSettings || showSomeoneWaitingSettingsSheet
     }
 
     func isHomeSectionFocused(_ section: HomeOnboardingFocus) -> Bool {
@@ -250,6 +308,12 @@ final class OnboardingStore: ObservableObject {
         resetForDebug()
         isActive = false
         step = nil
+        dailyPlayTutorial = nil
+        dailyPlayTutorialCompleted = false
+        stepAfterSomeoneWaiting = nil
+        didPresentSomeoneWaitingSettings = false
+        pendingSomeoneWaitingSettings = false
+        showSomeoneWaitingSettingsSheet = false
         isStepTransitioning = false
         awaitingDailyResultsOnboarding = false
         isDeferringTourForHomeEntrance = false
@@ -292,7 +356,8 @@ final class OnboardingStore: ObservableObject {
     /// Starts the zoom → pop → explain sequence when Home is free.
     func tryStartLivesIntro(livesRemaining: Int, totalLives: Int) {
         guard livesIntroPhase == .pending else { return }
-        guard !isActive else { return }
+        // Allow during the home tour so life teach → notify settings can chain.
+        guard !isInDailyResultsOnboarding, dailyPlayTutorial == nil else { return }
         guard totalLives > 0 else {
             completeLivesIntro()
             return
@@ -342,18 +407,62 @@ final class OnboardingStore: ObservableObject {
         livesIntroPhase = .idle
         livesIntroVisualFilled = 0
         livesIntroPoppingIndex = nil
+        tryPresentSomeoneWaitingSettingsIfReady()
     }
 
     /// User tapped the onboarding daily row during the forced-start step.
     func beganOnboardingDaily() {
         guard step == .startSixLetterDaily else { return }
         awaitingDailyResultsOnboarding = true
+        dailyPlayTutorialCompleted = false
         step = nil
+        dailyPlayTutorial = .rulesOverview
+    }
+
+    func advanceDailyPlayTutorial() {
+        guard let current = dailyPlayTutorial else { return }
+        switch current {
+        case .rulesOverview:
+            dailyPlayTutorial = .letterPoints
+        case .letterPoints:
+            dailyPlayTutorial = .submitRules
+        case .submitRules:
+            dailyPlayTutorial = .fourRounds
+        case .fourRounds:
+            dailyPlayTutorial = .startPractice
+        case .startPractice:
+            dailyPlayTutorial = .practicePlaying
+        case .practicePlaying:
+            break
+        case .readyForReal:
+            dailyPlayTutorial = nil
+            dailyPlayTutorialCompleted = true
+        }
+    }
+
+    /// Practice rack finished — show the “ready for real” callout.
+    func finishDailyPlayPractice() {
+        guard dailyPlayTutorial == .practicePlaying else { return }
+        dailyPlayTutorial = .readyForReal
+    }
+
+    /// Left practice / rules mid-flow — can re-enter the daily later.
+    func abandonDailyPlayTutorial() {
+        dailyPlayTutorial = nil
+    }
+
+    /// Re-open rules/practice if the player left mid-tutorial and taps the daily again.
+    func resumeDailyPlayTutorialIfNeeded() {
+        guard awaitingDailyResultsOnboarding,
+              !dailyPlayTutorialCompleted,
+              dailyPlayTutorial == nil else { return }
+        dailyPlayTutorial = .rulesOverview
     }
 
     /// First results screen after the onboarding daily puzzle finishes.
     func beginDailyResultsOnboarding() {
         guard awaitingDailyResultsOnboarding else { return }
+        dailyPlayTutorial = nil
         beginStepTransition()
         step = .dailyLeaderboard
     }
@@ -374,6 +483,10 @@ final class OnboardingStore: ObservableObject {
         case .inviteFriend:
             beginStepTransition()
             step = .homePlayFreely
+        case .someoneWaitingSettings:
+            beginStepTransition()
+            step = stepAfterSomeoneWaiting ?? .homePlayFreely
+            stepAfterSomeoneWaiting = nil
         case .homePlayFreely:
             complete()
         case .startSixLetterDaily:
@@ -381,22 +494,73 @@ final class OnboardingStore: ObservableObject {
         }
     }
 
+    /// After the player's first online match — queue the someone-waiting settings.
+    /// If a lives intro is pending/playing, wait until that finishes.
+    func beginSomeoneWaitingSettingsAfterOnlineMatch() {
+        guard !didPresentSomeoneWaitingSettings else { return }
+        guard !isInDailyResultsOnboarding, dailyPlayTutorial == nil else { return }
+        pendingSomeoneWaitingSettings = true
+        tryPresentSomeoneWaitingSettingsIfReady()
+    }
+
+    func dismissSomeoneWaitingSettingsSheet() {
+        showSomeoneWaitingSettingsSheet = false
+    }
+
+    /// Present settings only when Home is free (no lives intro mid-flight).
+    private func tryPresentSomeoneWaitingSettingsIfReady() {
+        guard pendingSomeoneWaitingSettings, !didPresentSomeoneWaitingSettings else { return }
+        // Wait out pending / animating / callout lives intro.
+        guard livesIntroPhase == .idle else { return }
+        guard !isInDailyResultsOnboarding, dailyPlayTutorial == nil else { return }
+
+        pendingSomeoneWaitingSettings = false
+        didPresentSomeoneWaitingSettings = true
+
+        if isActive {
+            switch step {
+            case .quickMatch:
+                stepAfterSomeoneWaiting = .inviteFriend
+            case .inviteFriend:
+                stepAfterSomeoneWaiting = .homePlayFreely
+            case .homePlayFreely, .someoneWaitingSettings:
+                stepAfterSomeoneWaiting = .homePlayFreely
+            case nil:
+                stepAfterSomeoneWaiting = .homePlayFreely
+            default:
+                stepAfterSomeoneWaiting = step
+            }
+            beginStepTransition()
+            step = .someoneWaitingSettings
+        } else {
+            showSomeoneWaitingSettingsSheet = true
+        }
+    }
+
     /// Paywall or top-words sheet dismissed after the premium pitch step.
     func finishDailyOnboardingAndReturnHome() {
         guard step == .dailyPremiumPitch else { return }
         awaitingDailyResultsOnboarding = false
+        dailyPlayTutorial = nil
+        dailyPlayTutorialCompleted = false
         beginStepTransition()
         step = .quickMatch
     }
 
     func skip() {
         awaitingDailyResultsOnboarding = false
+        dailyPlayTutorial = nil
+        dailyPlayTutorialCompleted = false
+        stepAfterSomeoneWaiting = nil
         isStepTransitioning = false
         complete()
     }
 
     func complete() {
         awaitingDailyResultsOnboarding = false
+        dailyPlayTutorial = nil
+        dailyPlayTutorialCompleted = false
+        stepAfterSomeoneWaiting = nil
         isStepTransitioning = false
         if !Self.repeatEveryLaunchForTesting {
             UserDefaults.standard.set(Self.currentVersion, forKey: Self.completedKey)
@@ -417,7 +581,7 @@ final class OnboardingStore: ObservableObject {
         case .dailyPremiumPitch: return "onboarding.revealTopWords"
         case .quickMatch: return "onboarding.playOnline"
         case .inviteFriend: return "onboarding.playOnline"
-        case .homePlayFreely, nil: return nil
+        case .someoneWaitingSettings, .homePlayFreely, nil: return nil
         }
     }
 

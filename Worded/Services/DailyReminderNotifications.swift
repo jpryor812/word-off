@@ -16,13 +16,11 @@ enum DailyReminderNotifications {
 
         guard SettingsStore.shared.notificationsEnabled else { return }
 
+        // Never prompt here — permission is requested from the Play Online flow / Settings.
         let settings = await center.notificationSettings()
         switch settings.authorizationStatus {
         case .authorized, .provisional, .ephemeral:
             break
-        case .notDetermined:
-            let granted = (try? await center.requestAuthorization(options: [.alert, .sound, .badge])) ?? false
-            guard granted else { return }
         default:
             return
         }

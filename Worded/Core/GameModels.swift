@@ -5,8 +5,8 @@ enum GameConstants {
     static let roundSeconds = 24
     static let pvpRoundsToWin = 4
     static let pvpMaxRounds = 7
-    /// Legacy search-window constant (timeout chooser removed — search until
-    /// match, Cancel, or Play AI). Kept for any remaining schedule helpers.
+    /// Legacy search-window constant (timeout chooser removed — human search
+    /// continues until match or Cancel). Kept for any remaining schedule helpers.
     // static let matchmakingTimeoutSeconds = 20
     // static let matchmakingTimeoutSeconds = 60
     static let matchmakingTimeoutSeconds = 60
@@ -40,6 +40,8 @@ enum GameConstants {
     static let baseLivesPerDay = 5
     static let maxStreakBonusLives = 5
     static let revealSeconds: Double = 3.0
+    /// Friend challenge invites expire if not accepted within this window.
+    static let challengeInviteTTL: TimeInterval = 6 * 60 * 60
     static let transitionSeconds: Double = 2.0
 
     /// Big daily racks (8+ tiles) get extra time to find long words.
@@ -79,6 +81,22 @@ struct MatchChallengeInvite: Identifiable, Equatable {
     let status: String
     let seed: String
     let matchId: String?
+    var createdAt: Date? = nil
+    var updatedAt: Date? = nil
+
+    var isExpired: Bool {
+        if status == "expired" { return true }
+        guard status == "pending", let createdAt else { return false }
+        return Date().timeIntervalSince(createdAt) >= GameConstants.challengeInviteTTL
+    }
+
+    /// Accepted recently enough that auto-starting the match still makes sense.
+    var isFreshlyAccepted: Bool {
+        guard status == "accepted" else { return false }
+        let stamp = updatedAt ?? createdAt
+        guard let stamp else { return false }
+        return Date().timeIntervalSince(stamp) <= 5 * 60
+    }
 }
 
 struct PlayerSubmission: Equatable, Codable {
@@ -102,6 +120,15 @@ struct RoundResult: Equatable, Codable {
     var opponent: PlayerSubmission
     var outcome: RoundOutcome
     var wasTieReplay: Bool = false
+    /// Scoring round (1…7). Tie replays keep the same number.
+    var displayRound: Int = 1
+    /// 1 = first play (R3), 2 = first tie replay (R3.2), etc.
+    var attempt: Int = 1
+
+    /// e.g. "R3" or "R3.2"
+    var label: String {
+        attempt <= 1 ? "R\(displayRound)" : "R\(displayRound).\(attempt)"
+    }
 }
 
 enum MatchOutcome: Equatable, Codable {
@@ -181,6 +208,7 @@ extension DailyPuzzleResult {
 /// One row of a daily leaderboard fetched from Supabase.
 struct DailyLeaderboardEntry: Identifiable {
     let id = UUID()
+    var userId: String? = nil
     let username: String
     let score: Int
     let bestWord: String?
@@ -205,6 +233,17 @@ enum DailySeed {
         var rng = SeededRandom(string: "worded-daily-\(day)-size\(rackSize)-round\(round)")
         return WordDictionary.shared.makeRack(size: rackSize, rng: &rng)
     }
+
+    /// Onboarding practice rack: WORDSS jumbled (W=4, D=2, S=1) so point values are obvious.
+    static func practiceRack(day: String, rackSize: Int) -> [Character] {
+        // Fixed scramble of W-O-R-D-S-S — ignores day/size so the teachable letters stay put.
+        _ = day
+        _ = rackSize
+        return Array("RSWDOS")
+    }
+
+    /// Letters whose point badges are highlighted during the practice teach step.
+    static let practiceHighlightLetters: Set<Character> = ["W", "D", "S"]
 
     /// Ladder uses its own seed stream so it doesn't collide with fixed-size dailies.
     static func ladderRack(day: String, round: Int) -> [Character] {

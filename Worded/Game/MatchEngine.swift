@@ -50,13 +50,18 @@ final class MatchEngine: ObservableObject {
     private var opponentPlan: (word: String?, submitAt: TimeInterval) = (nil, 99)
     private var consecutiveTies = 0
     private var roundEnding = false              // guards early-end scheduling
-    private var bannedWords: Set<String> = []    // words used in immediately-prior tied round
-    private var opponentBanned: Set<String> = []
     private var seed = SeededRandom(seed: UInt64.random(in: 0...UInt64.max))
     private let haptics = Haptics.shared
+    /// Remaining full-rack (8-letter) plays budgeted for this AI match.
+    private var aiBingosRemaining: Int = 0
 
     var onMatchComplete: ((MatchRecord) -> Void)?
     var onRoundScored: ((RoundResult) -> Void)?
+
+    /// e.g. "3" or "3.2" for the in-game header / intro.
+    var roundDisplayLabel: String {
+        consecutiveTies == 0 ? "\(roundNumber)" : "\(roundNumber).\(consecutiveTies + 1)"
+    }
 
     init(
         onlineMatch: OnlineMatchConfig? = nil,
@@ -72,6 +77,7 @@ final class MatchEngine: ObservableObject {
         self.challengeService = challengeService
         self.isFriendGame = isFriendGame || onlineMatch != nil
         self.aiAfterMatchmakingTimeout = aiAfterMatchmakingTimeout || aiTier != nil
+        self.aiBingosRemaining = onlineMatch == nil ? AIOpponent.bingoQuota(for: ai.tier) : 0
         if let onlineMatch {
             self.opponentName = onlineMatch.opponentUsername
             self.opponentBadgeStats = BadgeStats()
@@ -98,11 +104,9 @@ final class MatchEngine: ObservableObject {
                 beginRound()
             }
         } else {
-            let queueDelay = aiAfterMatchmakingTimeout
-                ? 0.8
-                : Double.random(in: 2.5...9.0)
+            // Explicit Play AI — short beat, no fake matchmaking wait.
             Task {
-                try? await Task.sleep(for: .seconds(queueDelay))
+                try? await Task.sleep(for: .seconds(0.8))
                 guard !Task.isCancelled else { return }
                 phase = .matchupIntro
                 try? await Task.sleep(for: .seconds(2.8))
@@ -129,14 +133,14 @@ final class MatchEngine: ObservableObject {
             opponentPlan = (nil, 99)
         } else {
             rack = WordDictionary.shared.makeRack(size: GameConstants.pvpRackSize, rng: &seed)
-            var plan = opponent.play(rack: rack)
-            if let word = plan.word, opponentBanned.contains(word) {
-                let alternatives = WordDictionary.shared.buildableWords(from: rack)
-                    .filter { !opponentBanned.contains($0) }
-                plan.word = alternatives.max {
-                    Scoring.score(word: $0, rackSize: rack.count, firstSubmit: false).total <
-                    Scoring.score(word: $1, rackSize: rack.count, firstSubmit: false).total
-                }
+            let allowBingo = shouldAIPlayBingoThisRound()
+            var plan = opponent.play(rack: rack, allowBingo: allowBingo)
+            // Never sit out — if somehow empty, take any buildable word.
+            if plan.word == nil {
+                plan.word = WordDictionary.shared.buildableWords(from: rack).first
+            }
+            if let word = plan.word, word.count >= rack.count {
+                aiBingosRemaining = max(0, aiBingosRemaining - 1)
             }
             opponentPlan = plan
         }
@@ -152,11 +156,22 @@ final class MatchEngine: ObservableObject {
         }
     }
 
+    /// Spend the match bingo budget across rounds instead of front-loading.
+    private func shouldAIPlayBingoThisRound() -> Bool {
+        guard aiBingosRemaining > 0 else { return false }
+        if opponent.tier >= 10 { return true }
+        let expectedTotalRounds = 7
+        let roundsLeft = max(1, expectedTotalRounds - rounds.count)
+        if aiBingosRemaining >= roundsLeft { return true }
+        return Double.random(in: 0...1) < Double(aiBingosRemaining) / Double(roundsLeft)
+    }
+
     private func startFlipSequence() {
         phase = .flipping
         SoundPlayer.shared.play(.whoosh)
         Task {
-            try? await Task.sleep(for: .seconds(1.6))
+            // Slide in (~0.75s) + pause, then flip face-up.
+            try? await Task.sleep(for: .seconds(RackView.slideTotalDuration + 0.5))
             SoundPlayer.shared.play(.flip)
             phase = .go
             haptics.impact()
@@ -213,11 +228,6 @@ final class MatchEngine: ObservableObject {
         }
         guard WordDictionary.shared.contains(word) else {
             submissionFeedback = "\(word) isn't a word — keep trying!"
-            SoundPlayer.shared.play(.error)
-            return
-        }
-        guard !bannedWords.contains(word) else {
-            submissionFeedback = "You can't reuse \(word) from the tied round!"
             SoundPlayer.shared.play(.error)
             return
         }
@@ -322,9 +332,6 @@ final class MatchEngine: ObservableObject {
         var player = PlayerSubmission(word: playerWord, submittedAt: playerTime)
         var opp = PlayerSubmission(word: opponentPlan.word, submittedAt: opponentPlan.word == nil ? nil : opponentPlan.submitAt)
 
-        // Tie-replay rule: banned words score 0.
-        if let word = player.word, bannedWords.contains(word) { player.word = nil }
-
         player.isValid = player.word.map { WordDictionary.shared.validate(word: $0, rack: rack) } ?? false
         opp.isValid = opp.word.map { WordDictionary.shared.validate(word: $0, rack: rack) } ?? false
 
@@ -344,8 +351,13 @@ final class MatchEngine: ObservableObject {
         else { outcome = .tie }
 
         let result = RoundResult(
-            rack: rack.map(String.init), player: player, opponent: opp,
-            outcome: outcome, wasTieReplay: consecutiveTies > 0)
+            rack: rack.map(String.init),
+            player: player,
+            opponent: opp,
+            outcome: outcome,
+            wasTieReplay: consecutiveTies > 0,
+            displayRound: roundNumber,
+            attempt: consecutiveTies + 1)
         rounds.append(result)
         lastRound = result
         onRoundScored?(result)
@@ -354,19 +366,13 @@ final class MatchEngine: ObservableObject {
         case .playerWins:
             playerRoundWins += 1
             consecutiveTies = 0
-            bannedWords = []
-            opponentBanned = []
             SoundPlayer.shared.play(.win)
         case .opponentWins:
             opponentRoundWins += 1
             consecutiveTies = 0
-            bannedWords = []
-            opponentBanned = []
             SoundPlayer.shared.play(.lose)
         case .tie:
             consecutiveTies += 1
-            if let word = player.word { bannedWords.insert(word) }
-            if let word = opp.word { opponentBanned.insert(word) }
         }
 
         phase = .reveal
@@ -437,8 +443,6 @@ final class MatchEngine: ObservableObject {
         lastRound = nil
         matchOutcome = nil
         consecutiveTies = 0
-        bannedWords = []
-        opponentBanned = []
         phase = .searching
         // AI "accepts" after a believable delay.
         Task {

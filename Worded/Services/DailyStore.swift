@@ -106,12 +106,24 @@ final class DailyStore: ObservableObject {
     }
 
     /// Top scores for one daily puzzle, with usernames and best words.
-    func fetchLeaderboard(day: String, rackSize: Int, limit: Int = 100) async -> [DailyLeaderboardEntry] {
+    /// When `friendUserIds` is non-nil, only those users (plus anyone matching
+    /// the filter) are returned — pass your friends' IDs for a friends board.
+    func fetchLeaderboard(
+        day: String,
+        rackSize: Int,
+        limit: Int = 100,
+        friendUserIds: Set<String>? = nil
+    ) async -> [DailyLeaderboardEntry] {
         guard SupabaseConfig.isConfigured else { return [] }
         do {
-            let query = "day=eq.\(day)&rack_size=eq.\(rackSize)"
-                + "&select=score,best_word,best_word_score,profiles(username)"
+            var query = "day=eq.\(day)&rack_size=eq.\(rackSize)"
+                + "&select=user_id,score,best_word,best_word_score,profiles(username)"
                 + "&order=score.desc&limit=\(limit)"
+            if let friendUserIds {
+                guard !friendUserIds.isEmpty else { return [] }
+                let list = friendUserIds.joined(separator: ",")
+                query += "&user_id=in.(\(list))"
+            }
             let data = try await SupabaseClient.shared.request(table: "daily_scores", query: query)
             guard let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
                 return []
@@ -119,6 +131,7 @@ final class DailyStore: ObservableObject {
             return rows.map { row in
                 let profile = row["profiles"] as? [String: Any]
                 return DailyLeaderboardEntry(
+                    userId: row["user_id"] as? String,
                     username: profile?["username"] as? String ?? "Player",
                     score: row["score"] as? Int ?? 0,
                     bestWord: row["best_word"] as? String,
